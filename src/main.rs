@@ -17,6 +17,7 @@ struct Cli {
 enum Commands {
     /// Add a video to the queue
     Add { url: String },
+    Next,
     Info,
 }
 
@@ -25,6 +26,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Add { url} => commands::add(url),
+        Commands::Next => commands::next(),
         Commands::Info => commands::info(),
     }
 }

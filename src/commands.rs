@@ -36,6 +36,33 @@ pub fn add(url: String) -> Result<()> {
     Ok(())
 }
 
+pub fn next() -> Result<()> {
+    let paths = paths::AppPaths::init()?;
+    let mut queue = store::load_queue(&paths.queue_file);
+
+    if queue.is_empty() {
+        println!("{}", "The queue is empty.".yellow());
+        return Ok(());
+    }
+
+    let next_video = queue.remove(0);
+
+    store::save_queue(&paths.queue_file, &queue)?;
+
+    let event = Event {
+        timestamp: Utc::now(),
+        action: Action::WATCHED,
+        video_id: next_video.id.clone(),
+    };
+
+    store::log_event(&paths.history_dir, &event)?;
+
+    println!("{} {}", "Opening:".blue(), next_video.url);
+    open::that(next_video.url)?;
+
+    Ok(())
+}
+
 pub fn info() -> Result<()> {
     // This runs the exact same logic as 'add', so it will show the truth
     let paths = paths::AppPaths::init()?;
