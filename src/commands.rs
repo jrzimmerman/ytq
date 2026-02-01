@@ -1,6 +1,6 @@
 use crate::models::{Action, Event, Mode, Video};
 use crate::{paths, store, youtube};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Local, Utc};
 use colored::Colorize;
 use either::Either;

@@ -59,7 +59,9 @@ pub fn stream_history(history_dir: &Path) -> Vec<Event> {
             let path = entry.path();
 
             if path.is_file()
-                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
                 && let Ok(file) = fs::File::open(&path)
             {
                 let reader = BufReader::new(file);
