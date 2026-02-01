@@ -6,7 +6,7 @@ Guidelines for AI coding agents working in this repository.
 
 **ytq** is a Rust CLI tool for managing a YouTube video queue. Built with Rust 2024 edition (requires **Rust 1.85+**).
 
-**Key dependencies:** clap (CLI parsing), serde/serde_json (serialization), anyhow (errors), chrono (timestamps), colored (terminal output)
+**Key dependencies:** clap (CLI parsing), serde/serde_json (serialization), anyhow (errors), chrono (timestamps), colored (terminal output), regex (URL parsing), url (URL parsing), etcetera (XDG/platform paths), fd-lock (file locking), open (browser launching), rand (random selection), either (iterator utilities)
 
 ## Build, Test, and Lint Commands
 

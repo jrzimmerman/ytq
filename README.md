@@ -38,6 +38,9 @@ ytq accepts the following YouTube URL formats:
 | Live streams | `youtube.com/live/VIDEO_ID` |
 | Embed | `youtube.com/embed/VIDEO_ID` |
 | Legacy v/ | `youtube.com/v/VIDEO_ID` |
+| Legacy e/ | `youtube.com/e/VIDEO_ID` |
+| Mobile | `m.youtube.com/watch?v=VIDEO_ID` |
+| YouTube Music | `music.youtube.com/watch?v=VIDEO_ID` |
 | Direct ID | `VIDEO_ID` (11 characters) |
 
 **Not supported:** Channel URLs, playlist URLs, and search result URLs. These will display a helpful error message suggesting you provide a direct video link instead.
@@ -58,18 +61,25 @@ ytq add dQw4w9WgXcQ
 ytq next
 ```
 
+3. **Feeling lucky?** - Pop and watch a random video from the queue.
+
+```bash
+ytq random
+```
+
 ## Command Reference
 
-| Command                    | Aliases         | Description                                                   |
-| -------------------------- | --------------- | ------------------------------------------------------------- |
-| `ytq add <input>`          | `a`             | Add video. Accepts URLs or IDs.                               |
-| `ytq next`                 | `play`, `watch` | Watch & Pop. Opens browser, logs event, removes from queue.   |
-| `ytq peek [n]`             |                 | Look ahead. Show the next n videos (default: 1).              |
-| `ytq list`                 | `ls`            | List all. Shows the full queue with local timestamps.         |
-| `ytq remove <id>`          | `rm`, `delete`  | Delete. Removes item by strict ID/URL matching.               |
-| `ytq stats`                |                 | Metrics. Shows your viewing statistics.                       |
-| `ytq config <key> <value>` |                 | Settings. Keys: `mode` (stack/queue).                         |
-| `ytq info`                 |                 | Debug. Prints the exact paths where your data is stored.      |
+| Command                    | Aliases                  | Description                                                   |
+| -------------------------- | ------------------------ | ------------------------------------------------------------- |
+| `ytq add <input>`          | `a`                      | Add video. Accepts URLs or IDs.                               |
+| `ytq next [target]`        | `play`, `watch`, `open`  | Watch & Pop. Opens browser, logs event, removes from queue. Optionally specify a video ID/URL to watch a specific video. |
+| `ytq random`               | `lucky`                  | Pop and watch a random video from the queue.                  |
+| `ytq peek [n]`             |                          | Look ahead. Show the next n videos (default: 1).              |
+| `ytq list`                 | `ls`                     | List all. Shows the full queue with local timestamps.         |
+| `ytq remove <target>`      | `rm`, `delete`           | Delete. Removes item by ID or URL matching.                   |
+| `ytq stats`                |                          | Metrics. Shows your viewing statistics (added, watched, skipped). |
+| `ytq config <key> <value>` |                          | Settings. Keys: `mode` (stack/queue).                         |
+| `ytq info`                 |                          | Debug. Prints the exact paths where your data is stored.      |
 
 ## Configuration
 

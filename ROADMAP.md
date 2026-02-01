@@ -4,13 +4,17 @@ ytq is a fully functional offline-first CLI for managing a YouTube watch queue. 
 
 ## Current Features
 
-- [x] Add videos via URL (watch, shorts, live, embed, v/), short link (youtu.be), or video ID
+- [x] Add videos via URL (watch, shorts, live, embed, v/, e/), short link (youtu.be), or video ID
+- [x] Supports mobile URLs (m.youtube.com) and YouTube Music URLs (music.youtube.com)
 - [x] Queue (FIFO) and Stack (LIFO) modes
-- [x] Watch next video (opens browser)
+- [x] Watch next video (opens browser) with optional target selection
+- [x] Random video selection (`ytq random` / `ytq lucky`)
 - [x] List, peek, and remove videos
-- [x] Event history logging
+- [x] Event history logging (partitioned by month as JSONL)
 - [x] Basic statistics (added, watched, skipped counts)
 - [x] Explicit error messages for unsupported URLs (channels, playlists, search)
+- [x] File locking for concurrent access protection (fd-lock)
+- [x] Platform-specific paths (XDG on Linux/macOS, AppData on Windows)
 
 ---
 
@@ -109,7 +113,6 @@ When videos have metadata, additional statistics become available:
 
 Ideas that may be explored later:
 
-- `ytq random` (alias: `lucky`) — Pop and watch a random video from the queue
 - Fuzzy search within queue (by ID, or title/channel when metadata available)
 - Paginated list output — Show first 100 videos by default, with `--limit N` and `--all` flags
 
