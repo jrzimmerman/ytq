@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use anyhow::{Result};
+use anyhow::{Context, Result};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs};
 use std::fs;
 
@@ -13,7 +13,7 @@ use etcetera::app_strategy::Windows as Strategy;
 use etcetera::app_strategy::Xdg as Strategy;
 
 pub struct AppPaths {
-    // pub config_file: PathBuf,
+    pub config_file: PathBuf,
     pub queue_file: PathBuf,
     pub history_dir: PathBuf,
 }
@@ -29,17 +29,23 @@ impl AppPaths {
         let strategy = Strategy::new(args)
             .map_err(|_| anyhow::anyhow!("Could not determine system paths"))?;
 
-        // let config_dir = strategy.config_dir();
+        // Resolve base directories
+        let config_dir = strategy.config_dir();
         let data_dir = strategy.data_dir();
 
-        // fs::create_dir_all(&config_dir)?;
-        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&config_dir)
+            .with_context(|| format!("Failed to create config dir: {:?}", config_dir))?;
+
+        fs::create_dir_all(&data_dir)
+            .with_context(|| format!("Failed to create data dir: {:?}", data_dir))?;
 
         let history_dir = data_dir.join("history");
-        fs::create_dir_all(&history_dir)?;
+        fs::create_dir_all(&history_dir)
+            .with_context(|| format!("Failed to create history dir: {:?}", history_dir))?;
 
+        // Return the specific file paths we need
         Ok(Self {
-            // config_file: config_dir.join("config.json"),
+            config_file: config_dir.join("config.json"),
             queue_file: data_dir.join("queue.json"),
             history_dir,
         })
