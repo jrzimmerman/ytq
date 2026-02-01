@@ -25,7 +25,11 @@ enum Commands {
     },
 
     /// Watch the next video and remove it from the queue
-    #[command(visible_alias = "play", visible_alias = "watch", visible_alias = "open")]
+    #[command(
+        visible_alias = "play",
+        visible_alias = "watch",
+        visible_alias = "open"
+    )]
     Next {
         /// Video ID or URL to open a specific video (uses queue/stack mode if omitted)
         target: Option<String>,
