@@ -110,6 +110,9 @@ cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
 # Check for errors
 cargo check
 
+# Format code
+cargo fmt
+
 # Lint with clippy
 cargo clippy -- -W clippy::all
 
