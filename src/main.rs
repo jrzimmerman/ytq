@@ -4,8 +4,9 @@ mod paths;
 mod store;
 mod youtube;
 
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
+use colored::Colorize;
 
 #[derive(Parser)]
 #[command(name = "ytq", version)]
@@ -19,9 +20,10 @@ enum Commands {
     /// Add a video to the queue
     #[command(alias = "a")]
     Add {
-        /// YouTube URL, Short Link, or Video ID
-        input: String
+        /// Video URL, short link, or video ID
+        input: String,
     },
+
     /// Watch the next video and remove it from the queue
     #[command(visible_alias = "play", visible_alias = "watch")]
     Next,
@@ -34,37 +36,49 @@ enum Commands {
     Peek {
         /// How many videos to show
         #[arg(default_value_t = 1)]
-        n: usize
+        n: usize,
     },
 
-    /// Remove a video by ID or URL (Strictly)
+    /// Remove a video by ID or URL
     #[command(visible_alias = "rm", visible_alias = "delete")]
     Remove {
         /// The ID or URL to remove
-        target: String
+        target: String,
     },
 
+    /// Show statistics about your queue history
     Stats,
 
+    /// Update a configuration value
     Config {
+        /// Configuration key (mode, offline)
         key: String,
-        value: String
+        /// New value
+        value: String,
     },
 
+    /// Show data file locations
     Info,
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("{} {e:#}", "error:".red());
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Add { input } => commands::add(input),
+        Commands::Add { input } => commands::add(&input),
         Commands::Next => commands::next(),
         Commands::List => commands::list(),
         Commands::Peek { n } => commands::peek(n),
-        Commands::Remove { target } => commands::remove(target),
+        Commands::Remove { target } => commands::remove(&target),
         Commands::Stats => commands::stats(),
-        Commands::Config { key, value } => commands::config(key, value),
+        Commands::Config { key, value } => commands::config(&key, &value),
         Commands::Info => commands::info(),
     }
 }

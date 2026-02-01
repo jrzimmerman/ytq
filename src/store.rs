@@ -13,7 +13,7 @@ pub fn load_queue(path: &Path) -> Vec<Video> {
     }
 }
 
-pub fn save_queue(path: &Path, queue: &Vec<Video>) -> Result<()> {
+pub fn save_queue(path: &Path, queue: &[Video]) -> Result<()> {
     let data = serde_json::to_string_pretty(queue)?;
     fs::write(path, data)?;
     Ok(())
@@ -38,7 +38,7 @@ pub fn log_event(history_dir: &Path, event: &Event) -> Result<()> {
     let month = event.timestamp.month();
 
     // Partition: ~/.local/share/ytq/history/2026-01.log
-    let log_file_path = history_dir.join(format!("{}-{:02}.log", year, month));
+    let log_file_path = history_dir.join(format!("{year}-{month:02}.log"));
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -46,7 +46,7 @@ pub fn log_event(history_dir: &Path, event: &Event) -> Result<()> {
         .open(log_file_path)?;
 
     let log_entry = serde_json::to_string(&event)?;
-    writeln!(file, "{}", log_entry)?;
+    writeln!(file, "{log_entry}")?;
 
     Ok(())
 }
@@ -57,16 +57,16 @@ pub fn stream_history(history_dir: &Path) -> Vec<Event> {
     if let Ok(entries) = fs::read_dir(history_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
-            if path.is_file() && filename.ends_with(".log") {
-                if let Ok(file) = fs::File::open(&path) {
-                    let reader = BufReader::new(file);
-                    for line in reader.lines().flatten() {
-                        // Skip empty lines or bad JSON
-                        if let Ok(event) = serde_json::from_str::<Event>(&line) {
-                            events.push(event);
-                        }
+            if path.is_file()
+                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+                && let Ok(file) = fs::File::open(&path)
+            {
+                let reader = BufReader::new(file);
+                for line in reader.lines().map_while(Result::ok) {
+                    // Skip empty lines or bad JSON
+                    if let Ok(event) = serde_json::from_str::<Event>(&line) {
+                        events.push(event);
                     }
                 }
             }

@@ -1,37 +1,30 @@
 use crate::models::{Action, Event, Mode, Video};
 use crate::{paths, store, youtube};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::{DateTime, Local, Utc};
-use colored::*;
+use colored::Colorize;
+use either::Either;
 
-pub fn add(input: String) -> Result<()> {
+pub fn add(input: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let mut queue = store::load_queue(&paths.queue_file);
 
     // Normalize input
-    let id = match youtube::extract_video_id(&input) {
-        Ok(valid_id) => valid_id,
-        Err(e) => {
-            eprintln!("{} {}", "Error:".red(), e);
-            return Ok(());
-        }
-    };
+    let id = youtube::extract_video_id(input)?;
 
     // Standardize URL
-    let url = format!("https://www.youtube.com/watch?v={}", id);
+    let url = format!("https://www.youtube.com/watch?v={id}");
 
     // Deduplicate
     if queue.iter().any(|v| v.id == id) {
-        println!("{} {}", "Video already in queue.".yellow(), input);
+        println!("{} {input}", "Video already in queue:".yellow());
         return Ok(());
     }
 
     let video = Video {
         id: id.clone(),
         url: url.clone(),
-        title: url.clone(),
         added_at: Utc::now(),
-        meta: None,
     };
 
     queue.push(video);
@@ -39,15 +32,13 @@ pub fn add(input: String) -> Result<()> {
 
     let event = Event {
         timestamp: Utc::now(),
-        action: Action::QUEUED,
+        action: Action::Queued,
         video_id: id.clone(),
-        video_title: url.clone(),
-        meta: None,
         time_in_queue_sec: None,
     };
     store::log_event(&paths.history_dir, &event)?;
 
-    println!("{} {}", "Added:".green(), id);
+    println!("{} {id}", "Added:".green());
     Ok(())
 }
 
@@ -57,13 +48,13 @@ pub fn next() -> Result<()> {
     let mut queue = store::load_queue(&paths.queue_file);
 
     if queue.is_empty() {
-        println!("{}", "The queue is empty.".yellow());
+        println!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
     let video = match cfg.mode {
         Mode::Queue => queue.remove(0),
-        Mode::Stack => queue.pop().unwrap(),
+        Mode::Stack => queue.pop().expect("queue verified non-empty"),
     };
 
     store::save_queue(&paths.queue_file, &queue)?;
@@ -73,10 +64,8 @@ pub fn next() -> Result<()> {
 
     let event = Event {
         timestamp: Utc::now(),
-        action: Action::WATCHED,
+        action: Action::Watched,
         video_id: video.id.clone(),
-        video_title: video.title.clone(),
-        meta: video.meta,
         time_in_queue_sec: Some(sec_in_queue),
     };
 
@@ -88,45 +77,35 @@ pub fn next() -> Result<()> {
     Ok(())
 }
 
-pub fn remove(target: String) -> Result<()> {
+pub fn remove(target: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let mut queue = store::load_queue(&paths.queue_file);
 
     if queue.is_empty() {
-        println!("Queue is empty.");
+        println!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
     // Extract ID from input
-    let target_id = match youtube::extract_video_id(&target) {
-        Ok(id) => id,
-        Err(e) => {
-             eprintln!("{} {}", "Error:".red(), e);
-             return Ok(());
-        }
-    };
+    let target_id = youtube::extract_video_id(target)?;
 
     // Find position
-    let index = queue.iter().position(|v| v.id == target_id);
+    let Some(idx) = queue.iter().position(|v| v.id == target_id) else {
+        bail!("video with ID '{target_id}' not found in queue");
+    };
 
-    if let Some(idx) = index {
-        let video = queue.remove(idx);
-        store::save_queue(&paths.queue_file, &queue)?;
+    let video = queue.remove(idx);
+    store::save_queue(&paths.queue_file, &queue)?;
 
-        let event = Event {
-            timestamp: Utc::now(),
-            action: Action::SKIPPED,
-            video_id: video.id.clone(),
-            video_title: video.title.clone(),
-            meta: video.meta,
-            time_in_queue_sec: None,
-        };
-        store::log_event(&paths.history_dir, &event)?;
+    let event = Event {
+        timestamp: Utc::now(),
+        action: Action::Skipped,
+        video_id: video.id.clone(),
+        time_in_queue_sec: None,
+    };
+    store::log_event(&paths.history_dir, &event)?;
 
-        println!("{} {}", "Removed:".red(), video.id);
-    } else {
-        println!("{} Could not find video with ID '{}'", "Error:".red(), target_id);
-    }
+    println!("{} {}", "Removed:".red(), video.id);
     Ok(())
 }
 
@@ -135,13 +114,18 @@ pub fn list() -> Result<()> {
     let queue = store::load_queue(&paths.queue_file);
 
     if queue.is_empty() {
-        println!("Queue is empty.");
+        println!("{}", "Queue is empty.".yellow());
     } else {
         println!("{} videos in queue:", queue.len());
         for (i, v) in queue.iter().enumerate() {
             // Display in Local time for the user
             let local_time: DateTime<Local> = DateTime::from(v.added_at);
-            println!("[{}] {} ({})", i + 1, v.id, local_time.format("%Y-%m-%d %H:%M"));
+            println!(
+                "[{}] {} ({})",
+                i + 1,
+                v.id,
+                local_time.format("%Y-%m-%d %H:%M")
+            );
         }
     }
     Ok(())
@@ -153,15 +137,15 @@ pub fn peek(n: usize) -> Result<()> {
     let queue = store::load_queue(&paths.queue_file);
 
     if queue.is_empty() {
-        println!("Queue is empty.");
+        println!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
-    println!("Next {} videos ({:?} mode):", n, cfg.mode);
+    println!("Next {n} video(s) ({:?} mode):", cfg.mode);
 
-    let iter: Box<dyn Iterator<Item = &Video>> = match cfg.mode {
-        Mode::Queue => Box::new(queue.iter().take(n)),       // Top N
-        Mode::Stack => Box::new(queue.iter().rev().take(n)), // Bottom N (Reversed)
+    let iter = match cfg.mode {
+        Mode::Queue => Either::Left(queue.iter().take(n)),
+        Mode::Stack => Either::Right(queue.iter().rev().take(n)),
     };
 
     for (i, v) in iter.enumerate() {
@@ -175,52 +159,56 @@ pub fn stats() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let events = store::stream_history(&paths.history_dir);
 
-    let watched = events.iter().filter(|e| matches!(e.action, Action::WATCHED)).count();
-    let added = events.iter().filter(|e| matches!(e.action, Action::QUEUED)).count();
-    let skipped = events.iter().filter(|e| matches!(e.action, Action::SKIPPED)).count();
+    let watched = events
+        .iter()
+        .filter(|e| matches!(e.action, Action::Watched))
+        .count();
+    let added = events
+        .iter()
+        .filter(|e| matches!(e.action, Action::Queued))
+        .count();
+    let skipped = events
+        .iter()
+        .filter(|e| matches!(e.action, Action::Skipped))
+        .count();
 
     println!("{}", "YTQ Stats".bold());
     println!("----------------");
-    println!("Videos Added:   {}", added);
-    println!("Videos Watched: {}", watched);
-    println!("Videos Skipped: {}", skipped);
+    println!("Videos Added:   {added}");
+    println!("Videos Watched: {watched}");
+    println!("Videos Skipped: {skipped}");
     Ok(())
 }
 
-pub fn config(key: String, value: String) -> Result<()> {
+pub fn config(key: &str, value: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let mut cfg = store::load_config(&paths.config_file);
 
-    match key.as_str() {
+    match key {
         "mode" => match value.to_lowercase().as_str() {
             "stack" => cfg.mode = Mode::Stack,
             "queue" => cfg.mode = Mode::Queue,
-            _ => println!("Invalid mode. Use 'stack' or 'queue'."),
+            _ => bail!("invalid mode '{value}': use 'stack' or 'queue'"),
         },
-        "offline" => match value.to_lowercase().as_str() {
-            "true" => cfg.offline = true,
-            "false" => cfg.offline = false,
-            _ => println!("Invalid boolean. Use 'true' or 'false'."),
-        },
-        _ => println!("Unknown config key. Available: mode, offline"),
+        _ => bail!("unknown config key '{key}': available keys are 'mode'"),
     }
 
     store::save_config(&paths.config_file, &cfg)?;
-    println!("Config updated.");
+    println!("{}", "Config updated.".green());
     Ok(())
 }
 
 pub fn info() -> Result<()> {
     let paths = paths::AppPaths::init()?;
 
-    println!("Data Paths");
+    println!("{}", "Data Paths".bold());
     println!("-------------");
     println!("Config:  {}", paths.config_file.display());
     println!("Queue:   {}", paths.queue_file.display());
     println!("History: {}", paths.history_dir.display());
 
     let queue_exists = paths.queue_file.exists();
-    println!("Queue File Exists? {}", queue_exists);
+    println!("Queue File Exists? {queue_exists}");
 
     Ok(())
 }

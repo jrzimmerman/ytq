@@ -4,13 +4,11 @@
 
 **ytq** ("YouTube Queue") is a local CLI tool designed to cure "Browser Tab Fatigue." It lets you stash videos for later, watch them in your browser when you're ready, and finally close those tabs.
 
----
-
 ## Installation
 
 ### Prerequisites
 
-You need **Rust** installed. If you don't have it, get it here: [rustup.rs](https://rustup.rs/)
+You need **Rust 1.85+** installed (for the 2024 edition). If you don't have it, get it here: [rustup.rs](https://rustup.rs/)
 
 ### Install from Source
 
@@ -26,18 +24,17 @@ cd ytq
 cargo install --path .
 ```
 
-_Note: Ensure ~/.cargo/bin is in your system $PATH._
+_Note: Ensure `~/.cargo/bin` is in your system `$PATH`._
 
 ## Quick Start
 
-1. Stash a video (Offline) Works with full URLs, short links (youtu.be), or the ID.
+1. **Stash a video** - Works offline with full URLs, short links (youtu.be), or just the video ID.
 
 ```bash
 ytq add https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-2. Watch the next video
-   Opens your default browser with the next video.
+2. **Watch the next video** - Opens your default browser with the next video in queue.
 
 ```bash
 ytq next
@@ -45,16 +42,16 @@ ytq next
 
 ## Command Reference
 
-| Command           | Alias  | Description                                                   |
-| ----------------- | ------ | ------------------------------------------------------------- | ----------------------------------------------------- |
-| `ytq add <input>` |        | Add video. Accepts URLs or IDs.                               |
-| `ytq next`        |        | "Watch & Pop. Opens browser, logs event, removes from queue." |
-| `ytq peek [n]`    |        | Look ahead. Show the next n videos (default: 1).              |
-| `ytq list`        | ls     |                                                               | List all. Shows the full queue with local timestamps. |
-| `ytq rm <id>`     | remove |                                                               | Delete. Removes item by strict ID/URL matching.       |
-| `ytq stats`       |        | Metrics. Shows your viewing statistics.                       |
-| `ytq config`      |        | Settings. Change modes (stack/queue)                          |
-| `ytq info`        |        | Debug. Prints the exact paths where your data is stored.      |
+| Command                    | Aliases         | Description                                                   |
+| -------------------------- | --------------- | ------------------------------------------------------------- |
+| `ytq add <input>`          | `a`             | Add video. Accepts URLs or IDs.                               |
+| `ytq next`                 | `play`, `watch` | Watch & Pop. Opens browser, logs event, removes from queue.   |
+| `ytq peek [n]`             |                 | Look ahead. Show the next n videos (default: 1).              |
+| `ytq list`                 | `ls`            | List all. Shows the full queue with local timestamps.         |
+| `ytq remove <id>`          | `rm`, `delete`  | Delete. Removes item by strict ID/URL matching.               |
+| `ytq stats`                |                 | Metrics. Shows your viewing statistics.                       |
+| `ytq config <key> <value>` |                 | Settings. Keys: `mode` (stack/queue).                         |
+| `ytq info`                 |                 | Debug. Prints the exact paths where your data is stored.      |
 
 ## Configuration
 
@@ -85,6 +82,9 @@ cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
 # Check for errors
 cargo check
 
+# Lint with clippy
+cargo clippy -- -W clippy::all
+
 # Run the test suite
 cargo test
 ```
@@ -93,12 +93,15 @@ cargo test
 
 To remove `ytq` and all associated data, follow these steps. Windows users may need to adjust paths.
 
-```bash
-1. Remove the binary
-cargo uninstall ytq
+1. Remove the binary:
 
-# 2. Clear your data and history
-# (Run 'ytq info' to confirm these paths first!)
+```bash
+cargo uninstall ytq
+```
+
+2. Clear your data and history (run `ytq info` to confirm these paths first):
+
+```bash
 rm -rf ~/.local/share/ytq
 rm -rf ~/.config/ytq
 ```
