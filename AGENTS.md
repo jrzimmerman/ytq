@@ -28,6 +28,9 @@ cargo test valid_video_id_direct
 cargo test youtube::tests
 cargo test models::tests
 
+# Format code
+cargo fmt
+
 # Lint with clippy (use project's standard warnings)
 cargo clippy -- -W clippy::all
 
