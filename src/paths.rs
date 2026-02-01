@@ -16,6 +16,7 @@ pub struct AppPaths {
     pub config_file: PathBuf,
     pub queue_file: PathBuf,
     pub history_dir: PathBuf,
+    pub lock_file: PathBuf,
 }
 
 impl AppPaths {
@@ -47,6 +48,7 @@ impl AppPaths {
         Ok(Self {
             config_file: config_dir.join("config.json"),
             queue_file: data_dir.join("queue.json"),
+            lock_file: data_dir.join("queue.json.lock"),
             history_dir,
         })
     }

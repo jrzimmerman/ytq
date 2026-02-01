@@ -25,8 +25,11 @@ enum Commands {
     },
 
     /// Watch the next video and remove it from the queue
-    #[command(visible_alias = "play", visible_alias = "watch")]
-    Next,
+    #[command(visible_alias = "play", visible_alias = "watch", visible_alias = "open")]
+    Next {
+        /// Video ID or URL to open a specific video (uses queue/stack mode if omitted)
+        target: Option<String>,
+    },
 
     /// List the current queue
     #[command(alias = "ls")]
@@ -59,6 +62,10 @@ enum Commands {
 
     /// Show data file locations
     Info,
+
+    /// Pop and watch a random video from the queue
+    #[command(alias = "lucky")]
+    Random,
 }
 
 fn main() {
@@ -73,12 +80,13 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Add { input } => commands::add(&input),
-        Commands::Next => commands::next(),
+        Commands::Next { target } => commands::next(target.as_deref()),
         Commands::List => commands::list(),
         Commands::Peek { n } => commands::peek(n),
         Commands::Remove { target } => commands::remove(&target),
         Commands::Stats => commands::stats(),
         Commands::Config { key, value } => commands::config(&key, &value),
         Commands::Info => commands::info(),
+        Commands::Random => commands::random(),
     }
 }
