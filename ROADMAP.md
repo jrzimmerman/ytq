@@ -21,10 +21,11 @@ Fetch video metadata (title, channel, duration, tags) via the YouTube Data API v
 
 #### Design Principles
 
-1. **Offline by default** - The `offline` config defaults to `true`. No network requests are made unless explicitly enabled.
-2. **`add` is always instant** - The `add` command never makes network requests. Metadata is fetched separately via a new `fetch` command.
-3. **Graceful degradation** - If `offline: false` but no API key is configured, show a warning and continue operating in offline mode.
-4. **Opt-in messaging** - Only show "run `ytq fetch` for metadata" hints when `offline: false`, so offline-first users aren't nagged.
+1. **Offline by default** — The `offline` config defaults to `true`. No network requests are made unless explicitly enabled.
+2. **`add` is always instant** — The `add` command never makes network requests. Metadata is fetched separately via a new `fetch` command.
+3. **Graceful degradation** — If `offline: false` but no API key is configured, show a warning and continue operating in offline mode.
+4. **Opt-in messaging** — Only show "run `ytq fetch` for metadata" hints when `offline: false`, so offline-first users aren't nagged.
+5. **Forwards compatible data** — All new fields use `Option<T>` with `#[serde(default)]` so old queue/history files parse correctly without migration.
 
 #### Configuration Behavior
 
@@ -47,6 +48,9 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
   - [ ] Add `VideoMeta` struct (title, channel, duration_seconds, tags, thumbnail_url)
   - [ ] Add `meta: Option<VideoMeta>` field to `Video` struct
   - [ ] Add metadata fields to `Event` struct for historical stats
+  - [ ] Use `#[serde(default)]` on all new `Option<T>` fields for forwards compatibility
+  - [ ] Ensure stats/display code checks for `Some(meta)` before using metadata
+  - [ ] No migration required — existing data continues to work; metadata populates gradually via `fetch`
 
 - [ ] **Phase 3: Fetch Command**
   - [ ] New `ytq fetch` command to retrieve metadata from YouTube Data API v3
