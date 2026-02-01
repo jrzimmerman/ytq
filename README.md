@@ -1,6 +1,6 @@
 # ytq
 
-**The YouTube Queue Manager for the Terminal.**
+**The YouTube Queue for the Terminal.**
 
 **ytq** ("YouTube Queue") is a local CLI tool designed to cure "Browser Tab Fatigue." It lets you stash videos for later, watch them in your browser when you're ready, and finally close those tabs.
 
