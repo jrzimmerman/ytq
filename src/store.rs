@@ -37,8 +37,8 @@ pub fn log_event(history_dir: &Path, event: &Event) -> Result<()> {
     let year = event.timestamp.year();
     let month = event.timestamp.month();
 
-    // Partition: ~/.local/share/ytq/history/2026-01.log
-    let log_file_path = history_dir.join(format!("{year}-{month:02}.log"));
+    // Partition: ~/.local/share/ytq/history/2026-01.jsonl
+    let log_file_path = history_dir.join(format!("{year}-{month:02}.jsonl"));
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -59,7 +59,7 @@ pub fn stream_history(history_dir: &Path) -> Vec<Event> {
             let path = entry.path();
 
             if path.is_file()
-                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
                 && let Ok(file) = fs::File::open(&path)
             {
                 let reader = BufReader::new(file);
