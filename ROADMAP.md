@@ -4,12 +4,13 @@ ytq is a fully functional offline-first CLI for managing a YouTube watch queue. 
 
 ## Current Features
 
-- [x] Add videos via URL, short link, or video ID
+- [x] Add videos via URL (watch, shorts, live, embed, v/), short link (youtu.be), or video ID
 - [x] Queue (FIFO) and Stack (LIFO) modes
 - [x] Watch next video (opens browser)
 - [x] List, peek, and remove videos
 - [x] Event history logging
 - [x] Basic statistics (added, watched, skipped counts)
+- [x] Explicit error messages for unsupported URLs (channels, playlists, search)
 
 ---
 

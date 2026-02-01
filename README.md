@@ -26,12 +26,30 @@ cargo install --path .
 
 _Note: Ensure `~/.cargo/bin` is in your system `$PATH`._
 
+## Supported URL Formats
+
+ytq accepts the following YouTube URL formats:
+
+| Format | Example |
+|--------|---------|
+| Standard watch URL | `youtube.com/watch?v=VIDEO_ID` |
+| Short link | `youtu.be/VIDEO_ID` |
+| Shorts | `youtube.com/shorts/VIDEO_ID` |
+| Live streams | `youtube.com/live/VIDEO_ID` |
+| Embed | `youtube.com/embed/VIDEO_ID` |
+| Legacy v/ | `youtube.com/v/VIDEO_ID` |
+| Direct ID | `VIDEO_ID` (11 characters) |
+
+**Not supported:** Channel URLs, playlist URLs, and search result URLs. These will display a helpful error message suggesting you provide a direct video link instead.
+
 ## Quick Start
 
-1. **Stash a video** - Works offline with full URLs, short links (youtu.be), or just the video ID.
+1. **Stash a video** - Works with full URLs, short links, shorts, live streams, or just the video ID.
 
 ```bash
 ytq add https://www.youtube.com/watch?v=dQw4w9WgXcQ
+ytq add https://www.youtube.com/shorts/dQw4w9WgXcQ
+ytq add dQw4w9WgXcQ
 ```
 
 2. **Watch the next video** - Opens your default browser with the next video in queue.

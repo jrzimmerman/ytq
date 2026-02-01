@@ -47,6 +47,8 @@ src/
 ├── store.rs     # File I/O for queue, config, and history
 ├── paths.rs     # Platform-specific path resolution
 └── youtube.rs   # YouTube URL/ID parsing and validation
+                 # Supports: watch, shorts, live, embed, v/, youtu.be
+                 # Rejects with helpful errors: channels, playlists, search
 ```
 
 ## Code Style

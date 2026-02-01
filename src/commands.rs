@@ -12,8 +12,8 @@ pub fn add(input: &str) -> Result<()> {
     // Normalize input
     let id = youtube::extract_video_id(input)?;
 
-    // Standardize URL
-    let url = format!("https://www.youtube.com/watch?v={id}");
+    // Build canonical URL
+    let url = youtube::build_canonical_url(&id);
 
     // Deduplicate
     if queue.iter().any(|v| v.id == id) {
