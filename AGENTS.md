@@ -70,15 +70,19 @@ src/
 
 Group imports in this order, separated by blank lines:
 
-1. Crate modules (`use crate::...`)
-2. Standard library (`use std::...`)
+1. Standard library (`use std::...`)
+2. Crate modules (`use crate::...`)
 3. External crates (alphabetically)
 
 ```rust
+use std::sync::LazyLock;
+
 use crate::models::{Config, Event, Video};
 use crate::{paths, store};
+
 use anyhow::{bail, Result};
 use chrono::Utc;
+use regex::Regex;
 ```
 
 ### Error Handling
@@ -86,7 +90,7 @@ use chrono::Utc;
 Use `anyhow` for all fallible functions:
 
 ```rust
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 pub fn example() -> Result<()> {
     // Use ? operator for propagation
@@ -100,6 +104,10 @@ pub fn example() -> Result<()> {
     // Use anyhow! for inline errors
     let id = extract_id(&url)
         .ok_or_else(|| anyhow!("invalid URL: {url}"))?;
+
+    // Add context to errors
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create dir: {}", dir.display()))?;
 
     Ok(())
 }
@@ -179,8 +187,6 @@ use etcetera::app_strategy::Xdg as Strategy;
 
 ## Testing
 
-### Test Location
-
 Place tests in a `#[cfg(test)]` module at the bottom of each file:
 
 ```rust
@@ -202,12 +208,7 @@ mod tests {
 }
 ```
 
-### Test Naming
-
-- Use descriptive names: `valid_video_id_direct`, `config_serde_roundtrip`
-- Test both success and failure cases: `invalid_domain`, `missing_v_param`
-
-### Running Tests
+**Test naming:** Use descriptive names like `valid_video_id_direct`, `config_serde_roundtrip`. Test both success and failure cases.
 
 ```bash
 cargo test                           # All tests
