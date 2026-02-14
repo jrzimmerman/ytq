@@ -69,25 +69,26 @@ ytq random
 
 ## Command Reference
 
-| Command                    | Aliases                  | Description                                                   |
-| -------------------------- | ------------------------ | ------------------------------------------------------------- |
-| `ytq add <input>`          | `a`                      | Add video. Accepts URLs or IDs.                               |
-| `ytq next [target]`        | `play`, `watch`, `open`  | Watch & Pop. Opens browser, logs event, removes from queue. Optionally specify a video ID/URL to watch a specific video. |
-| `ytq random`               | `lucky`                  | Pop and watch a random video from the queue.                  |
-| `ytq peek [n]`             |                          | Look ahead. Show the next n videos (default: 1).              |
-| `ytq list`                 | `ls`                     | List all. Shows the full queue with local timestamps.         |
-| `ytq remove <target>`      | `rm`, `delete`           | Delete. Removes item by ID or URL matching.                   |
-| `ytq stats`                |                          | Metrics. Shows your viewing statistics (added, watched, skipped). |
-| `ytq config <key> <value>` |                          | Settings. Keys: `mode` (stack/queue).                         |
-| `ytq info`                 |                          | Debug. Prints the exact paths where your data is stored.      |
+| Command | Shortcut | Aliases | Description |
+|---------|----------|---------|-------------|
+| `ytq add <input>` | `a` | | Add video. Accepts URLs or IDs. |
+| `ytq next [target]` | `n`, `p`, `w`, `o` | `play`, `watch`, `open` | Watch & pop. Opens browser, logs event, removes from queue. |
+| `ytq random` | `r` | `lucky` | Pop and watch a random video from the queue. |
+| `ytq peek [n]` | `k` | | Look ahead. Show the next n videos (default: 1). |
+| `ytq list` | `l` | `ls` | List all. Shows the full queue. |
+| `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
+| `ytq fetch [target]` | `f` | | Fetch video metadata from YouTube Data API v3. |
+| `ytq stats` | `s` | | Metrics. Shows your viewing statistics. |
+| `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
+| `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
 
 ## Configuration
 
 Your preferences live in `config.json`. You can modify them via the CLI.
 
-**Switch to "Stack" Mode (LIFO)**
+### Queue Mode
 
-Tired of watching old videos? Switch to Stack mode to always watch the most recently added video first.
+**Switch to "Stack" Mode (LIFO)** - Watch the most recently added video first.
 
 ```bash
 ytq config mode stack
@@ -98,6 +99,80 @@ ytq config mode stack
 ```bash
 ytq config mode queue
 ```
+
+### Online Features (Optional)
+
+ytq is **offline by default** - no network requests are made unless you explicitly enable online features.
+
+**Enable online features:**
+
+```bash
+ytq config offline false
+```
+
+**Set your YouTube Data API v3 key:**
+
+```bash
+ytq config youtube_api_key YOUR_KEY_HERE
+```
+
+Or use an environment variable (takes precedence over config):
+
+```bash
+export YOUTUBE_DATA_API_KEY=YOUR_KEY_HERE
+```
+
+### Fetching Metadata
+
+When online features are enabled, the `fetch` command retrieves video metadata (title, channel, duration, tags, etc.) from the YouTube Data API v3.
+
+```bash
+# Fetch metadata for all queue videos missing metadata
+ytq fetch
+
+# Fetch with a limit (useful for testing)
+ytq fetch --limit 5
+
+# Fetch for a specific video (force-refresh)
+ytq fetch dQw4w9WgXcQ
+
+# Fetch for multiple videos (comma-separated, force-refresh)
+ytq fetch dQw4w9WgXcQ,jNQXAC9IVRw
+
+# Fetch for all videos (queue + history)
+ytq fetch --all
+
+# Fetch for history videos only
+ytq fetch --history
+
+# Force refresh video categories
+ytq fetch --refresh-categories
+```
+
+Metadata is stored in a separate `metadata.json` file, keeping your queue data small and fast. Video categories are cached in `categories.json` and only fetched on first run (or with `--refresh-categories`).
+
+When metadata is available, `list` and `peek` show enriched output with video titles, channels, and durations:
+
+```
+4 videos in queue:
+  #    ID            Title                                Channel         Duration  Added
+  1    dQw4w9WgXcQ   Never Gonna Give You Up (Officia...  Rick Astley     3:34      2026-02-14 10:30
+  2    jNQXAC9IVRw   Me at the zoo                        jawed           0:19      2026-02-13 09:15
+  3    abc12345678   (run `ytq fetch`)                                              2026-02-12 08:00
+  4    def12345678   (run `ytq fetch`)                                              2026-02-11 07:00
+```
+
+## Data Storage
+
+ytq uses platform-specific paths for data storage. Run `ytq info` to see where your data lives.
+
+| File | Purpose |
+|------|---------|
+| `config.json` | User configuration (mode, offline, API key) |
+| `queue.json` | Current video queue |
+| `metadata.json` | Video metadata cache (title, channel, duration, tags) |
+| `categories.json` | YouTube video category lookup table |
+| `history/*.jsonl` | Event history logs (partitioned by month) |
 
 ## Development
 

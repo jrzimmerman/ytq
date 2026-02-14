@@ -3,6 +3,7 @@ mod models;
 mod paths;
 mod store;
 mod youtube;
+mod youtube_api;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,6 +27,10 @@ enum Commands {
 
     /// Watch the next video and remove it from the queue
     #[command(
+        alias = "n",
+        alias = "p",
+        alias = "w",
+        alias = "o",
         visible_alias = "play",
         visible_alias = "watch",
         visible_alias = "open"
@@ -36,10 +41,11 @@ enum Commands {
     },
 
     /// List the current queue
-    #[command(alias = "ls")]
+    #[command(alias = "l", alias = "ls")]
     List,
 
     /// Look at the next few videos without watching
+    #[command(alias = "k")]
     Peek {
         /// How many videos to show
         #[arg(default_value_t = 1)]
@@ -47,28 +53,62 @@ enum Commands {
     },
 
     /// Remove a video by ID or URL
-    #[command(visible_alias = "rm", visible_alias = "delete")]
+    #[command(alias = "d", visible_alias = "rm", visible_alias = "delete")]
     Remove {
         /// The ID or URL to remove
         target: String,
     },
 
     /// Show statistics about your queue history
+    #[command(alias = "s")]
     Stats,
 
     /// Update a configuration value
+    #[command(alias = "c")]
     Config {
-        /// Configuration key (mode, offline)
+        /// Configuration key (mode, offline, youtube_api_key)
         key: String,
         /// New value
         value: String,
     },
 
     /// Show data file locations
+    #[command(alias = "i")]
     Info,
 
+    /// Fetch video metadata from YouTube Data API v3
+    #[command(alias = "f")]
+    Fetch {
+        /// Video ID(s), URL(s), or comma-separated list to fetch/refresh
+        target: Option<String>,
+
+        /// Fetch for queue videos only (default when no flags given)
+        #[arg(long)]
+        queue: bool,
+
+        /// Fetch for history videos only
+        #[arg(long)]
+        history: bool,
+
+        /// Fetch for all videos (queue + history)
+        #[arg(long)]
+        all: bool,
+
+        /// Maximum number of videos to fetch (useful for testing)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Force re-fetch metadata, including previously unavailable videos
+        #[arg(long)]
+        force: bool,
+
+        /// Force refresh video categories
+        #[arg(long)]
+        refresh_categories: bool,
+    },
+
     /// Pop and watch a random video from the queue
-    #[command(alias = "lucky")]
+    #[command(alias = "r", alias = "lucky")]
     Random,
 }
 
@@ -91,6 +131,23 @@ fn run() -> Result<()> {
         Commands::Stats => commands::stats(),
         Commands::Config { key, value } => commands::config(&key, &value),
         Commands::Info => commands::info(),
+        Commands::Fetch {
+            target,
+            queue,
+            history,
+            all,
+            limit,
+            force,
+            refresh_categories,
+        } => commands::fetch(
+            target.as_deref(),
+            queue,
+            history,
+            all,
+            limit,
+            force,
+            refresh_categories,
+        ),
         Commands::Random => commands::random(),
     }
 }

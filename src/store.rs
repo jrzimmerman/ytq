@@ -1,11 +1,14 @@
-use crate::models::{Config, Event, Video};
-use crate::paths::AppPaths;
-use anyhow::Result;
-use chrono::Datelike;
-use fd_lock::RwLock;
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+
+use crate::models::{Config, Event, Video, VideoMeta};
+use crate::paths::AppPaths;
+
+use anyhow::{Context, Result};
+use chrono::Datelike;
+use fd_lock::RwLock;
 
 /// Acquires an exclusive lock on the queue, loads it, runs the callback with
 /// mutable access, and saves the result. The lock is held for the entire operation.
@@ -137,4 +140,43 @@ pub fn stream_history(history_dir: &Path) -> Vec<Event> {
     events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
     events
+}
+
+/// Loads video metadata from metadata.json.
+/// Returns a HashMap keyed by video ID. Returns empty map if file is
+/// missing or contains invalid JSON.
+pub fn load_metadata(path: &Path) -> HashMap<String, VideoMeta> {
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+/// Saves the full metadata map to metadata.json.
+/// Uses write-to-temp-then-rename for crash safety.
+pub fn save_metadata(path: &Path, metadata: &HashMap<String, VideoMeta>) -> Result<()> {
+    let data = serde_json::to_string_pretty(metadata)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, &data).with_context(|| format!("failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("failed to rename to {}", path.display()))?;
+    Ok(())
+}
+
+// TODO: Uncomment when stats/wrapped feature needs to join against categories
+// /// Loads YouTube video categories from categories.json.
+// /// Returns a HashMap mapping category ID to category name.
+// pub fn load_categories(path: &Path) -> HashMap<String, String> {
+//     if let Ok(data) = fs::read_to_string(path) {
+//         serde_json::from_str(&data).unwrap_or_default()
+//     } else {
+//         HashMap::new()
+//     }
+// }
+
+/// Saves YouTube video categories to categories.json.
+pub fn save_categories(path: &Path, categories: &HashMap<String, String>) -> Result<()> {
+    let data = serde_json::to_string_pretty(categories)?;
+    fs::write(path, data)?;
+    Ok(())
 }
