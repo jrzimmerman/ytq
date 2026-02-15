@@ -78,7 +78,7 @@ ytq random
 | `ytq list` | `l` | `ls` | List all. Shows the full queue. |
 | `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
 | `ytq fetch [target]` | `f` | | Fetch video metadata from YouTube Data API v3. |
-| `ytq stats` | `s` | | Metrics. Shows your viewing statistics. |
+| `ytq stats` | `s` | | Metrics. Shows your viewing statistics. Supports `--wrapped`, `--week`, `--month`, `--year`, `--from`, `--to`. |
 | `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
 | `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
 
@@ -161,6 +161,46 @@ When metadata is available, `list` and `peek` show enriched output with video ti
   3    abc12345678   (run `ytq fetch`)                                              2026-02-12 08:00
   4    def12345678   (run `ytq fetch`)                                              2026-02-11 07:00
 ```
+
+### Statistics
+
+ytq tracks your queue behavior and viewing patterns. The `stats` command shows a summary of your activity:
+
+```bash
+# All-time overview
+ytq stats
+
+# Full "wrapped" deep dive with charts and leaderboards
+ytq stats --wrapped
+```
+
+**Time filtering** lets you scope stats to any period:
+
+```bash
+ytq stats --week                          # Last 7 days
+ytq stats --month                         # Last 30 days
+ytq stats --month 2026-01                 # Specific month
+ytq stats --year                          # Last 365 days
+ytq stats --year 2025                     # Specific year
+ytq stats --from 2025-06-01 --to 2025-12-31  # Custom range
+ytq stats --wrapped --year 2025           # Combine with --wrapped
+```
+
+**Basic stats** (always available from the event log):
+- Videos added, watched, skipped counts
+- Completion rate and queue depth
+- Average time in queue before watching
+- Most active day of week
+
+**Wrapped stats** (`--wrapped` flag adds):
+- Monthly activity bar charts (added and watched)
+- Time-of-day distribution (morning/afternoon/evening/night)
+- Busiest day and longest watch streak
+- Top channels and category breakdown with bar charts
+- Top tags, skip rate, queue throughput
+- Longest/shortest videos, fastest/slowest time-to-watch
+
+When metadata is available (via `ytq fetch --history`), stats are enriched with total watch time, channel rankings, categories, tags, and video durations. Without metadata, core event-log stats still work — no network requests are ever made by `stats`.
 
 ## Data Storage
 

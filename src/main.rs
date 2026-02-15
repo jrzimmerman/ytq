@@ -1,6 +1,7 @@
 mod commands;
 mod models;
 mod paths;
+mod stats;
 mod store;
 mod youtube;
 mod youtube_api;
@@ -61,7 +62,35 @@ enum Commands {
 
     /// Show statistics about your queue history
     #[command(alias = "s")]
-    Stats,
+    Stats {
+        /// Show full "wrapped" deep-dive statistics
+        #[arg(long)]
+        wrapped: bool,
+
+        /// Show stats for all time instead of just the current year
+        #[arg(long)]
+        all: bool,
+
+        /// Filter to last 7 days
+        #[arg(long, conflicts_with_all = ["month", "year", "from", "to"])]
+        week: bool,
+
+        /// Last 30 days, or a specific month (YYYY-MM)
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "YYYY-MM")]
+        month: Option<String>,
+
+        /// Last 365 days, or a specific year (YYYY)
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "YYYY")]
+        year: Option<String>,
+
+        /// Start date for custom range (YYYY-MM-DD)
+        #[arg(long, conflicts_with_all = ["week", "month", "year"], value_name = "DATE")]
+        from: Option<String>,
+
+        /// End date for custom range (YYYY-MM-DD)
+        #[arg(long, conflicts_with_all = ["week", "month", "year"], value_name = "DATE")]
+        to: Option<String>,
+    },
 
     /// Update a configuration value
     #[command(alias = "c")]
@@ -128,7 +157,15 @@ fn run() -> Result<()> {
         Commands::List => commands::list(),
         Commands::Peek { n } => commands::peek(n),
         Commands::Remove { target } => commands::remove(&target),
-        Commands::Stats => commands::stats(),
+        Commands::Stats {
+            wrapped,
+            all,
+            week,
+            month,
+            year,
+            from,
+            to,
+        } => commands::stats(wrapped, all, week, month, year, from, to),
         Commands::Config { key, value } => commands::config(&key, &value),
         Commands::Info => commands::info(),
         Commands::Fetch {

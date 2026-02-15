@@ -11,6 +11,7 @@ ytq is a fully functional offline-first CLI for managing a YouTube watch queue. 
 - [x] Random video selection (`ytq random` / `ytq lucky`)
 - [x] List, peek, and remove videos
 - [x] Event history logging (partitioned by month as JSONL)
+- [x] Enhanced statistics with time filtering and "wrapped" deep dive
 - [x] Basic statistics (added, watched, skipped counts)
 - [x] Explicit error messages for unsupported URLs (channels, playlists, search)
 - [x] File locking for concurrent access protection (fd-lock)
@@ -91,42 +92,56 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
 
 ---
 
-## Planned Features
+## Implemented: Enhanced Statistics ("YouTube Wrapped")
 
-### Enhanced Statistics ("YouTube Wrapped")
+The `stats` command supports time-based filtering and a `--wrapped` flag for a full deep-dive analysis. Analytics focus on **your interaction and usage patterns**, not YouTube's popularity metrics. No new dependencies were added — all analytics are pure Rust using existing crates.
 
-Expand the `stats` command with time-based filtering and richer metrics when metadata is available. Analytics focus on **your interaction and usage patterns**, not YouTube's popularity metrics.
+### Design Principles
 
-#### Basic Stats (Always Available)
+1. **Offline-first** — Core stats (counts, streaks, queue time, trends) always work from the event log alone. No network requests are ever made by `stats`.
+2. **Metadata enrichment** — When metadata is available, stats are enriched with total watch time, channel rankings, categories, tags, and video durations.
+3. **Graceful hints** — When metadata would improve results, a hint is shown: "Run `ytq fetch --history` for richer stats."
 
-These stats work regardless of metadata availability:
+### Basic Stats (`ytq stats`)
 
-- Videos added / watched / skipped counts
-- Average time in queue before watching
-- Queue throughput (watched vs added over time)
-- Most active days/times for adding videos
-- Completion rate (watched / total removed)
+Always available from the event log:
 
-#### Enhanced Stats (When Metadata Available)
+- [x] Videos added / watched / skipped counts
+- [x] Completion rate (watched / total removed)
+- [x] Current queue depth
+- [x] Average time in queue before watching
+- [x] Most active day of week for adding videos
+- [x] Total watch time (when metadata available)
+- [x] Top 3 channels (when metadata available)
 
-When videos have metadata, additional statistics become available:
+### Wrapped Stats (`ytq stats --wrapped`)
 
-- Total watch time (sum of durations)
-- Average video length
-- Favorite channels (by watch count)
-- Longest/shortest videos watched
-- Category breakdown (joined against `categories.json`)
-- Tag analysis
+All basic stats plus:
 
-#### Time Filtering
+- [x] Monthly activity bar charts (added and watched)
+- [x] Time-of-day distribution (morning/afternoon/evening/night)
+- [x] Busiest single day
+- [x] Longest watch streak (consecutive days)
+- [x] Top 10 channels with bar chart
+- [x] Category breakdown with bar chart (joined against `categories.json`)
+- [x] Top 10 tags (normalized, case-insensitive)
+- [x] Average video duration
+- [x] Longest and shortest videos watched
+- [x] Skip rate
+- [x] Fastest and slowest time-to-watch
+- [x] Watches per week (queue throughput)
 
-- [ ] `ytq stats` — All-time statistics (default)
-- [ ] `ytq stats --week` — Last 7 days
-- [ ] `ytq stats --month` — Last 30 days
-- [ ] `ytq stats --month 2026-01` — Specific month
-- [ ] `ytq stats --year` — Last 365 days
-- [ ] `ytq stats --year 2025` — Specific year
-- [ ] `ytq stats --from 2025-06-01 --to 2025-12-31` — Custom date range
+### Time Filtering
+
+- [x] `ytq stats` — All-time statistics (default)
+- [x] `ytq stats --week` — Last 7 days
+- [x] `ytq stats --month` — Last 30 days
+- [x] `ytq stats --month 2026-01` — Specific month
+- [x] `ytq stats --year` — Last 365 days
+- [x] `ytq stats --year 2025` — Specific year
+- [x] `ytq stats --from 2025-06-01 --to 2025-12-31` — Custom date range
+- [x] All period flags composable with `--wrapped`
+- [x] Conflicting period flags rejected with clear errors
 
 ---
 

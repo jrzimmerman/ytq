@@ -163,16 +163,15 @@ pub fn save_metadata(path: &Path, metadata: &HashMap<String, VideoMeta>) -> Resu
     Ok(())
 }
 
-// TODO: Uncomment when stats/wrapped feature needs to join against categories
-// /// Loads YouTube video categories from categories.json.
-// /// Returns a HashMap mapping category ID to category name.
-// pub fn load_categories(path: &Path) -> HashMap<String, String> {
-//     if let Ok(data) = fs::read_to_string(path) {
-//         serde_json::from_str(&data).unwrap_or_default()
-//     } else {
-//         HashMap::new()
-//     }
-// }
+/// Loads YouTube video categories from categories.json.
+/// Returns a HashMap mapping category ID to category name.
+pub fn load_categories(path: &Path) -> HashMap<String, String> {
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
 
 /// Saves YouTube video categories to categories.json.
 pub fn save_categories(path: &Path, categories: &HashMap<String, String>) -> Result<()> {

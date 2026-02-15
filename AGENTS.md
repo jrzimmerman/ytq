@@ -6,7 +6,7 @@ Guidelines for AI coding agents working in this repository.
 
 **ytq** is a Rust CLI tool for managing a YouTube video queue. Built with Rust 2024 edition (requires **Rust 1.85+**).
 
-**Key dependencies:** clap (CLI parsing), serde/serde_json (serialization), anyhow (errors), chrono (timestamps), colored (terminal output), regex (URL parsing), url (URL parsing), etcetera (XDG/platform paths), fd-lock (file locking), open (browser launching), rand (random selection), either (iterator utilities)
+**Key dependencies:** clap (CLI parsing), serde/serde_json (serialization), anyhow (errors), chrono (timestamps), colored (terminal output), regex (URL parsing), url (URL parsing), ureq (HTTP client), etcetera (XDG/platform paths), fd-lock (file locking), open (browser launching), rand (random selection), either (iterator utilities)
 
 ## Build, Test, and Lint Commands
 
@@ -44,14 +44,16 @@ cargo run -- list
 
 ```
 src/
-├── main.rs      # Entry point, CLI definition, command dispatch
-├── commands.rs  # Command implementations (add, next, list, etc.)
-├── models.rs    # Data structures (Video, Config, Event, Mode)
-├── store.rs     # File I/O for queue, config, and history
-├── paths.rs     # Platform-specific path resolution
-└── youtube.rs   # YouTube URL/ID parsing and validation
-                 # Supports: watch, shorts, live, embed, v/, youtu.be
-                 # Rejects with helpful errors: channels, playlists, search
+├── main.rs        # Entry point, CLI definition, command dispatch
+├── commands.rs    # Command implementations (add, next, list, etc.)
+├── models.rs      # Data structures (Video, Config, Event, Mode)
+├── stats.rs       # Statistics computation and rendering (stats, wrapped)
+├── store.rs       # File I/O for queue, config, and history
+├── paths.rs       # Platform-specific path resolution
+├── youtube.rs     # YouTube URL/ID parsing and validation
+│                  # Supports: watch, shorts, live, embed, v/, youtu.be
+│                  # Rejects with helpful errors: channels, playlists, search
+└── youtube_api.rs # YouTube Data API v3 client (metadata, categories)
 ```
 
 ## Code Style
@@ -73,6 +75,8 @@ Group imports in this order, separated by blank lines:
 1. Standard library (`use std::...`)
 2. Crate modules (`use crate::...`)
 3. External crates (alphabetically)
+
+Within a `use` group, `cargo fmt` sorts items: lowercase identifiers first (alphabetically), then uppercase (alphabetically). For example, `{bail, Result}` not `{Result, bail}`.
 
 ```rust
 use std::sync::LazyLock;
@@ -167,6 +171,7 @@ Use `LazyLock` for compiled regex and other static initialization:
 
 ```rust
 use std::sync::LazyLock;
+
 use regex::Regex;
 
 static VIDEO_ID_RE: LazyLock<Regex> =
@@ -184,6 +189,28 @@ use etcetera::app_strategy::Windows as Strategy;
 #[cfg(not(target_os = "windows"))]
 use etcetera::app_strategy::Xdg as Strategy;
 ```
+
+## Formatting and Linting
+
+**Always run `cargo fmt` and `cargo clippy` before considering any change complete.** Code must pass both without warnings.
+
+```bash
+# Format — always run after editing code
+cargo fmt
+
+# Lint — must pass with zero warnings
+cargo clippy -- -W clippy::all
+```
+
+**Clippy rules to follow:**
+
+- Prefer `.is_some_and(...)` over `.map_or(false, ...)`.
+- Collapse nested `if` / `if let` into a single `if` with `&&` chains when possible.
+- Use `for (i, item) in iter.enumerate()` instead of indexing with `for i in 0..len`.
+- Respect the default argument limit (7). If a function needs more, add `#[allow(clippy::too_many_arguments)]` explicitly.
+- Let `cargo fmt` handle all whitespace, line-wrapping, and trailing-comma decisions — do not fight the formatter.
+
+**Workflow:** After any code change, run `cargo fmt` first, then `cargo clippy -- -W clippy::all`, then `cargo test`. Fix any issues before moving on.
 
 ## Testing
 

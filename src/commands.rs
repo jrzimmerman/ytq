@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
-use crate::{paths, store, youtube, youtube_api};
+use crate::stats::DateRange;
+use crate::{paths, stats, store, youtube, youtube_api};
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
 use rand::RngExt;
 
@@ -322,29 +323,126 @@ pub fn peek(n: usize) -> Result<()> {
     })
 }
 
-pub fn stats() -> Result<()> {
+pub fn stats(
+    wrapped: bool,
+    all: bool,
+    week: bool,
+    month: Option<String>,
+    year: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let events = store::stream_history(&paths.history_dir);
 
-    let watched = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
-        .count();
-    let added = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Queued))
-        .count();
-    let skipped = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Skipped))
-        .count();
+    // Resolve date range from flags
+    let range = resolve_date_range(all, week, month, year, from, to)?;
 
-    println!("{}", "YTQ Stats".bold());
-    println!("----------------");
-    println!("Videos Added:   {added}");
-    println!("Videos Watched: {watched}");
-    println!("Videos Skipped: {skipped}");
+    // Load events and filter by date range
+    let all_events = store::stream_history(&paths.history_dir);
+    let filtered = stats::filter_events(&all_events, &range);
+
+    // Load metadata opportunistically (no network requests)
+    let metadata = store::load_metadata(&paths.metadata_file);
+    let categories = store::load_categories(&paths.categories_file);
+
+    // Get current queue video IDs for queue profile stats
+    let queue_ids = store::with_queue_read(&paths, |queue| {
+        queue.iter().map(|v| v.id.clone()).collect::<Vec<_>>()
+    })?;
+
+    // Check whether we have any useful metadata (for queue or watched videos)
+    let has_metadata = queue_ids
+        .iter()
+        .any(|id| metadata.get(id).is_some_and(|m| !m.unavailable))
+        || filtered
+            .iter()
+            .filter(|e| matches!(e.action, Action::Watched))
+            .any(|e| metadata.get(&e.video_id).is_some_and(|m| !m.unavailable));
+
+    if wrapped {
+        let report = stats::compute_wrapped(&filtered, &queue_ids, &metadata, &categories, &range);
+        stats::print_wrapped(&report, &range, has_metadata);
+    } else {
+        let report = stats::compute_basic(&filtered, &queue_ids, &metadata);
+        stats::print_basic(&report, &range, has_metadata);
+    }
+
     Ok(())
+}
+
+/// Resolves CLI flags into a DateRange. Flags are already mutually exclusive
+/// via clap's `conflicts_with_all`, so at most one period flag is set.
+///
+/// When no date flags are given, defaults to the current year unless `--all`
+/// is passed.
+fn resolve_date_range(
+    all: bool,
+    week: bool,
+    month: Option<String>,
+    year: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<DateRange> {
+    if week {
+        return Ok(DateRange::last_days(7));
+    }
+
+    if let Some(val) = month {
+        if val.is_empty() {
+            // --month with no value => last 30 days
+            return Ok(DateRange::last_days(30));
+        }
+        // --month YYYY-MM
+        let parts: Vec<&str> = val.split('-').collect();
+        if parts.len() != 2 {
+            bail!("invalid month format '{val}': expected YYYY-MM");
+        }
+        let y: i32 = parts[0]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid year in '{val}'"))?;
+        let m: u32 = parts[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid month in '{val}'"))?;
+        return DateRange::specific_month(y, m)
+            .ok_or_else(|| anyhow::anyhow!("invalid month: {val}"));
+    }
+
+    if let Some(val) = year {
+        if val.is_empty() {
+            // --year with no value => last 365 days
+            return Ok(DateRange::last_days(365));
+        }
+        // --year YYYY
+        let y: i32 = val
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid year: '{val}'"))?;
+        return DateRange::specific_year(y).ok_or_else(|| anyhow::anyhow!("invalid year: {val}"));
+    }
+
+    if from.is_some() || to.is_some() {
+        let from_date = from
+            .map(|s| {
+                NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                    .map_err(|_| anyhow::anyhow!("invalid --from date '{s}': expected YYYY-MM-DD"))
+            })
+            .transpose()?;
+        let to_date = to
+            .map(|s| {
+                NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                    .map_err(|_| anyhow::anyhow!("invalid --to date '{s}': expected YYYY-MM-DD"))
+            })
+            .transpose()?;
+        return Ok(DateRange::custom(from_date, to_date));
+    }
+
+    if all {
+        return Ok(DateRange::all_time());
+    }
+
+    // Default: current year (in local time)
+    let current_year = Local::now().year();
+    DateRange::specific_year(current_year)
+        .ok_or_else(|| anyhow::anyhow!("failed to build date range for current year"))
 }
 
 pub fn config(key: &str, value: &str) -> Result<()> {
