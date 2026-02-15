@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::models::{Config, Event, Video, VideoMeta};
 use crate::paths::AppPaths;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Datelike;
 use fd_lock::RwLock;
 
@@ -154,12 +154,9 @@ pub fn load_metadata(path: &Path) -> HashMap<String, VideoMeta> {
 }
 
 /// Saves the full metadata map to metadata.json.
-/// Uses write-to-temp-then-rename for crash safety.
 pub fn save_metadata(path: &Path, metadata: &HashMap<String, VideoMeta>) -> Result<()> {
     let data = serde_json::to_string_pretty(metadata)?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &data).with_context(|| format!("failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("failed to rename to {}", path.display()))?;
+    fs::write(path, data)?;
     Ok(())
 }
 
