@@ -2,7 +2,7 @@
 
 **The YouTube Queue for the Terminal.**
 
-**ytq** ("YouTube Queue") is a local CLI tool designed to cure "Browser Tab Fatigue." It lets you stash videos for later, watch them in your browser when you're ready, and finally close those tabs.
+**ytq** ("YouTube Queue") is an offline-first CLI for saving YouTube videos to a personal queue, opening the next or a random pick in your browser, and tracking what you watched over time. It supports queue and stack modes, multiple YouTube URL formats, optional metadata fetching via the YouTube Data API, and built-in stats so your backlog stays searchable, lightweight, and out of your tabs.
 
 ## Installation
 
@@ -219,19 +219,58 @@ ytq uses platform-specific paths for data storage. Run `ytq info` to see where y
 Want to hack on `ytq`?
 
 ```bash
-# Run locally without installing
-cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
-
-# Check for errors
+# Fast compile check
 cargo check
+
+# Build
+cargo build
+cargo build --release
 
 # Format code
 cargo fmt
+cargo fmt --check
 
-# Lint with clippy
+# Lint
 cargo clippy -- -W clippy::all
 
+# Match CI locally
+cargo clippy -- -D warnings
+
 # Run the test suite
+cargo test
+
+# List all tests
+cargo test -- --list
+
+# Run a single test by name fragment
+cargo test valid_video_id_direct
+cargo test basic_stats_counts
+
+# Run tests in one module
+cargo test youtube::tests
+cargo test stats::tests
+
+# Show test stdout
+cargo test valid_video_id_direct -- --nocapture
+
+# Run locally without installing
+cargo run -- list
+cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+CI currently runs:
+
+```bash
+cargo test
+cargo fmt --check
+cargo clippy -- -D warnings
+```
+
+Before opening a PR, run:
+
+```bash
+cargo fmt
+cargo clippy -- -D warnings
 cargo test
 ```
 

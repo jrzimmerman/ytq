@@ -1,82 +1,117 @@
 # AGENTS.md - ytq
 
-Guidelines for AI coding agents working in this repository.
+Guidance for coding agents working in this repository.
 
-## Project Overview
+## Project Summary
 
-**ytq** is a Rust CLI tool for managing a YouTube video queue. Built with Rust 2024 edition (requires **Rust 1.85+**).
+- `ytq` is a Rust CLI for managing a personal YouTube queue.
+- Rust edition: `2024`
+- Minimum toolchain: Rust `1.85+`
+- Main crates in use: `clap`, `anyhow`, `serde`, `serde_json`, `chrono`, `colored`, `regex`, `url`, `ureq`, `etcetera`, `fd-lock`, `open`, `rand`
+- The app is offline-first. Network access is only used for explicit metadata/category fetch operations.
 
-**Key dependencies:** clap (CLI parsing), serde/serde_json (serialization), anyhow (errors), chrono (timestamps), colored (terminal output), regex (URL parsing), url (URL parsing), ureq (HTTP client), etcetera (XDG/platform paths), fd-lock (file locking), open (browser launching), rand (random selection), either (iterator utilities)
+## Repository Layout
 
-## Build, Test, and Lint Commands
+```text
+src/main.rs        CLI definition and command dispatch
+src/commands.rs    Command implementations
+src/models.rs      Core data types and serde models
+src/store.rs       Queue/config/history persistence and locking
+src/stats.rs       Stats computation and rendering
+src/paths.rs       Platform-specific path resolution
+src/youtube.rs     YouTube URL and ID parsing
+src/youtube_api.rs YouTube Data API client and duration parsing
+```
+
+## Build, Lint, and Test Commands
 
 ```bash
 # Build
-cargo build                    # Debug build
-cargo build --release          # Release build
+cargo build
+cargo build --release
 
-# Type checking (fast, no codegen)
+# Fast compile check
 cargo check
 
-# Run all tests
-cargo test
-
-# Run a single test by name
-cargo test valid_video_id_direct
-
-# Run tests in a specific module
-cargo test youtube::tests
-cargo test models::tests
-
-# Format code
+# Format
 cargo fmt
+cargo fmt --check
 
-# Lint with clippy (use project's standard warnings)
+# Lint
 cargo clippy -- -W clippy::all
 
-# Run locally during development
-cargo run -- <command> [args]
-cargo run -- add https://youtube.com/watch?v=dQw4w9WgXcQ
+# Match CI's stricter clippy gate
+cargo clippy -- -D warnings
+
+# Full test suite
+cargo test
+
+# List all tests
+cargo test -- --list
+
+# Run a single test by exact name fragment
+cargo test valid_video_id_direct
+cargo test basic_stats_counts
+
+# Run tests in one module
+cargo test youtube::tests
+cargo test stats::tests
+cargo test youtube_api::tests
+
+# Show test stdout
+cargo test valid_video_id_direct -- --nocapture
+
+# Run the CLI locally
 cargo run -- list
+cargo run -- add https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-## Project Structure
+## CI Expectations
 
+GitHub Actions currently runs:
+
+- `cargo test`
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+
+Before considering work complete, run:
+
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+cargo test
 ```
-src/
-├── main.rs        # Entry point, CLI definition, command dispatch
-├── commands.rs    # Command implementations (add, next, list, etc.)
-├── models.rs      # Data structures (Video, Config, Event, Mode)
-├── stats.rs       # Statistics computation and rendering (stats, wrapped)
-├── store.rs       # File I/O for queue, config, and history
-├── paths.rs       # Platform-specific path resolution
-├── youtube.rs     # YouTube URL/ID parsing and validation
-│                  # Supports: watch, shorts, live, embed, v/, youtu.be
-│                  # Rejects with helpful errors: channels, playlists, search
-└── youtube_api.rs # YouTube Data API v3 client (metadata, categories)
-```
 
-## Code Style
+## Testing Notes
 
-### Naming Conventions
+- Tests live in `#[cfg(test)] mod tests` blocks at the bottom of each file.
+- This project is a binary crate, so test names are typically namespaced like `youtube::tests::valid_video_id_direct`.
+- `cargo test <substring>` is the normal way to run one test or a small group.
+- Prefer descriptive test names that state behavior, not implementation details.
+- Cover both success and failure paths when editing parsing, stats, or persistence logic.
 
-| Element               | Convention        | Example                     |
-| --------------------- | ----------------- | --------------------------- |
-| Functions, variables  | `snake_case`      | `extract_video_id`          |
-| Types, enums, structs | `PascalCase`      | `Video`, `Mode`, `AppPaths` |
-| Constants             | `SCREAMING_SNAKE` | `VIDEO_ID_RE`               |
-| CLI commands/args     | `kebab-case`      | `--files-with-matches`      |
-| Modules               | `snake_case`      | `youtube.rs`                |
+## Code Style Overview
 
-### Import Organization
+Follow existing patterns in the repo rather than introducing a new style.
+
+### Naming
+
+- Functions and variables: `snake_case`
+- Modules/files: `snake_case`
+- Structs/enums/traits: `PascalCase`
+- Constants/statics: `SCREAMING_SNAKE_CASE`
+- CLI flags/subcommands: `kebab-case`
+- Tests: descriptive `snake_case`, often behavior-oriented like `config_serde_roundtrip`
+
+### Imports
 
 Group imports in this order, separated by blank lines:
 
-1. Standard library (`use std::...`)
-2. Crate modules (`use crate::...`)
-3. External crates (alphabetically)
+1. Standard library
+2. Crate-local imports (`crate::...`)
+3. External crates
 
-Within a `use` group, `cargo fmt` sorts items: lowercase identifiers first (alphabetically), then uppercase (alphabetically). For example, `{bail, Result}` not `{Result, bail}`.
+Example:
 
 ```rust
 use std::sync::LazyLock;
@@ -85,200 +120,102 @@ use crate::models::{Config, Event, Video};
 use crate::{paths, store};
 
 use anyhow::{bail, Result};
-use chrono::Utc;
 use regex::Regex;
 ```
+
+Let `cargo fmt` handle intra-group ordering.
+
+### Formatting
+
+- Always use `cargo fmt`.
+- Do not manually preserve line wrapping that `rustfmt` wants to change.
+- Keep functions and match arms readable; prefer the formatter's defaults.
+- Use comments sparingly; most modules already rely on clear naming and short doc comments.
+
+### Types and Data Modeling
+
+- Use `struct` and `enum` definitions with derive macros where appropriate.
+- Common derives in this codebase: `Debug`, `Clone`, `Serialize`, `Deserialize`, `PartialEq`, `Default`.
+- Use `#[serde(default)]` for backward-compatible config/model evolution.
+- Use `#[serde(rename_all = "lowercase")]` for enums exposed in JSON config.
+- Prefer explicit domain types such as `Video`, `VideoMeta`, `Event`, `Config`, `Mode`.
+- Keep serialized shapes stable; this app persists user data locally.
 
 ### Error Handling
 
-Use `anyhow` for all fallible functions:
+- Use `anyhow::Result<T>` for fallible functions.
+- Use `bail!(...)` for early user-facing failures.
+- Use `anyhow!(...)` or `ok_or_else(...)` for inline error creation.
+- Add context with `.context(...)` or `.with_context(...)` around I/O and parsing that can fail opaquely.
+- Favor propagating errors with `?`.
+
+Example:
 
 ```rust
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-pub fn example() -> Result<()> {
-    // Use ? operator for propagation
-    let data = fs::read_to_string(path)?;
-
-    // Use bail! for early error returns
+fn load(path: &Path) -> Result<String> {
+    let data = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     if data.is_empty() {
         bail!("file is empty");
     }
-
-    // Use anyhow! for inline errors
-    let id = extract_id(&url)
-        .ok_or_else(|| anyhow!("invalid URL: {url}"))?;
-
-    // Add context to errors
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create dir: {}", dir.display()))?;
-
-    Ok(())
+    Ok(data)
 }
 ```
 
-**Patterns:**
+## Project-Specific Implementation Patterns
 
-- Return `Result<T>` (alias for `anyhow::Result<T>`)
-- Use `bail!("message")` instead of `return Err(anyhow!("message"))`
-- Use `?` operator for error propagation
-- Add context with `.context()` or `.with_context(|| format!(...))`
+### CLI and Command Flow
 
-### Type Definitions
+- CLI definitions use `clap` derive macros in `src/main.rs`.
+- Help text is usually written as doc comments on enum variants and fields.
+- Aliases and visible aliases are common; preserve existing command ergonomics.
+- `main()` prints colored errors and exits non-zero; command logic lives in `run()` and `src/commands.rs`.
 
-Use derive macros liberally:
+### Persistence and Locking
 
-```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Video {
-    pub id: String,
-    pub url: String,
-    pub added_at: DateTime<Utc>,
-}
+- Queue mutations must go through `store::with_queue(...)`.
+- Queue reads should use `store::with_queue_read(...)`.
+- Do not bypass locking for queue operations.
+- Queue/config/metadata data is JSON; history is monthly JSONL.
+- Persistence helpers often return defaults instead of failing on missing files.
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    #[default]
-    Queue,
-    Stack,
-}
-```
+### Parsing and Validation
 
-**Common derive traits:** `Debug`, `Clone`, `Serialize`, `Deserialize`, `PartialEq`, `Default`
-
-### CLI Structure (clap)
-
-```rust
-#[derive(Parser)]
-#[command(name = "ytq", version)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Help text becomes doc comment
-    #[command(alias = "a")]
-    Add { input: String },
-}
-```
-
-### Static Patterns
-
-Use `LazyLock` for compiled regex and other static initialization:
-
-```rust
-use std::sync::LazyLock;
-
-use regex::Regex;
-
-static VIDEO_ID_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_-]{11}$").unwrap());
-```
+- URL/ID parsing lives in `src/youtube.rs`.
+- Regex statics use `std::sync::LazyLock`.
+- Keep validation messages specific and user-friendly.
+- Preserve support for multiple YouTube URL formats and explicit rejection of unsupported ones.
 
 ### Platform-Specific Code
 
-Use conditional compilation for platform differences:
+- `src/paths.rs` uses `#[cfg(target_os = "windows")]` and `#[cfg(not(target_os = "windows"))]`.
+- Continue using `etcetera` strategy selection rather than hand-rolled platform path logic.
 
-```rust
-#[cfg(target_os = "windows")]
-use etcetera::app_strategy::Windows as Strategy;
+### Stats and Time Handling
 
-#[cfg(not(target_os = "windows"))]
-use etcetera::app_strategy::Xdg as Strategy;
-```
+- Stats operate on UTC timestamps internally.
+- Convert to local time for user-facing grouping such as weekdays, dates, and time-of-day buckets.
+- If you change reporting logic, update both computation and rendering tests.
 
-## Formatting and Linting
+### Clippy Preferences Seen in This Repo
 
-**Always run `cargo fmt` and `cargo clippy` before considering any change complete.** Code must pass both without warnings.
+- Prefer `.is_some_and(...)` over older `map_or(false, ...)` patterns.
+- Collapse nested `if`/`if let` when it improves clarity.
+- Prefer iterator-based code over indexing loops.
+- If a function truly needs many parameters, the repo uses targeted `#[allow(clippy::too_many_arguments)]` on that function.
 
-```bash
-# Format — always run after editing code
-cargo fmt
+## Test Authoring Guidelines
 
-# Lint — must pass with zero warnings
-cargo clippy -- -W clippy::all
-```
+- Put tests at the bottom of the file they cover.
+- Use small builder/helper functions inside test modules when setup is repetitive.
+- Keep assertions direct and specific.
+- Favor deterministic inputs over clock- or environment-sensitive behavior unless the test is explicitly about that.
 
-**Clippy rules to follow:**
+## Practical Advice For Agents
 
-- Prefer `.is_some_and(...)` over `.map_or(false, ...)`.
-- Collapse nested `if` / `if let` into a single `if` with `&&` chains when possible.
-- Use `for (i, item) in iter.enumerate()` instead of indexing with `for i in 0..len`.
-- Respect the default argument limit (7). If a function needs more, add `#[allow(clippy::too_many_arguments)]` explicitly.
-- Let `cargo fmt` handle all whitespace, line-wrapping, and trailing-comma decisions — do not fight the formatter.
-
-**Workflow:** After any code change, run `cargo fmt` first, then `cargo clippy -- -W clippy::all`, then `cargo test`. Fix any issues before moving on.
-
-## Testing
-
-Place tests in a `#[cfg(test)]` module at the bottom of each file:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_name_describes_behavior() {
-        // Arrange
-        let input = "test input";
-
-        // Act
-        let result = function_under_test(input);
-
-        // Assert
-        assert_eq!(result.unwrap(), expected);
-    }
-}
-```
-
-**Test naming:** Use descriptive names like `valid_video_id_direct`, `config_serde_roundtrip`. Test both success and failure cases.
-
-```bash
-cargo test                           # All tests
-cargo test video                     # Tests matching "video"
-cargo test youtube::tests            # Tests in youtube module
-cargo test valid_video_id_direct     # Specific test
-cargo test -- --nocapture            # Show println! output
-```
-
-## Common Idioms
-
-### Result Handling in main()
-
-```rust
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("{} {e:#}", "error:".red());
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-    // ... command dispatch
-}
-```
-
-### Optional Fields with Serde
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub struct Config {
-    #[serde(default)]
-    pub mode: Mode,  // Uses Mode::default() if missing
-}
-```
-
-### User-Facing Output
-
-```rust
-use colored::Colorize;
-
-println!("{} {id}", "Added:".green());
-println!("{}", "Queue is empty.".yellow());
-eprintln!("{} {e:#}", "error:".red());
-```
+- Read the neighboring module before editing; behavior is split cleanly by concern.
+- Preserve backward compatibility for local data files where practical.
+- When changing command behavior, check `README.md` and CLI help text for drift.
+- When changing developer workflow expectations, keep this file aligned with `.github/workflows/ci.yml`.
