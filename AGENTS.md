@@ -7,7 +7,7 @@ Guidance for coding agents working in this repository.
 - `ytq` is a Rust CLI for managing a personal YouTube queue.
 - Rust edition: `2024`
 - Minimum toolchain: Rust `1.85+`
-- Main crates in use: `clap`, `anyhow`, `serde`, `serde_json`, `chrono`, `colored`, `regex`, `url`, `ureq`, `etcetera`, `fd-lock`, `open`, `rand`
+- Main crates in use: `clap`, `anyhow`, `serde`, `serde_json`, `chrono`, `colored`, `regex`, `url`, `ureq`, `etcetera`, `rusqlite` (bundled, with chrono support), `open`
 - The app is offline-first. Network access is only used for explicit metadata/category fetch operations.
 
 ## Repository Layout
@@ -16,7 +16,8 @@ Guidance for coding agents working in this repository.
 src/main.rs        CLI definition and command dispatch
 src/commands.rs    Command implementations
 src/models.rs      Core data types and serde models
-src/store.rs       Queue/config/history persistence and locking
+src/db.rs          SQLite-backed queue and metadata storage
+src/store.rs       Config, categories, and history (JSONL) persistence
 src/stats.rs       Stats computation and rendering
 src/paths.rs       Platform-specific path resolution
 src/youtube.rs     YouTube URL and ID parsing
@@ -173,13 +174,14 @@ fn load(path: &Path) -> Result<String> {
 - Aliases and visible aliases are common; preserve existing command ergonomics.
 - `main()` prints colored errors and exits non-zero; command logic lives in `run()` and `src/commands.rs`.
 
-### Persistence and Locking
+### Persistence
 
-- Queue mutations must go through `store::with_queue(...)`.
-- Queue reads should use `store::with_queue_read(...)`.
-- Do not bypass locking for queue operations.
-- Queue/config/metadata data is JSON; history is monthly JSONL.
-- Persistence helpers often return defaults instead of failing on missing files.
+- Queue and metadata mutations go through the `Db` struct in `src/db.rs`.
+- Open one `Db` per command via `Db::open(&paths)` — this also runs the one-time JSON->SQLite migration on first call after upgrade.
+- Concurrency is handled by SQLite WAL mode (no file locking layer).
+- Config and categories are still JSON; history is append-only monthly JSONL.
+- Persistence helpers (for non-DB files) return defaults instead of failing on missing files.
+- See [README.md](README.md#sqlite-migration) for migration semantics and cleanup of legacy `.bak` files.
 
 ### Parsing and Validation
 

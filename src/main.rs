@@ -1,4 +1,5 @@
 mod commands;
+mod db;
 mod models;
 mod paths;
 mod stats;

@@ -14,7 +14,7 @@ ytq is a fully functional offline-first CLI for managing a YouTube watch queue. 
 - [x] Enhanced statistics with time filtering and "wrapped" deep dive
 - [x] Basic statistics (added, watched, skipped counts)
 - [x] Explicit error messages for unsupported URLs (channels, playlists, search)
-- [x] File locking for concurrent access protection (fd-lock)
+- [x] SQLite-backed storage for queue and metadata (WAL mode handles concurrency)
 - [x] Platform-specific paths (XDG on Linux/macOS, AppData on Windows)
 - [x] Single-letter aliases for all commands (`a`, `n`, `p`, `w`, `o`, `l`, `k`, `d`, `f`, `s`, `c`, `i`, `r`)
 
@@ -145,6 +145,66 @@ All basic stats plus:
 
 ---
 
+## Implemented: SQLite Storage Backend
+
+Queue and metadata storage migrated from JSON files to a single SQLite database to fix slow writes at scale. Driven by the 13,000+ video queue that made every `ytq add` rewrite a 1.7 MB JSON file, making batch tools like `youtube-tab-manager` painfully slow.
+
+### Architecture
+
+| File | Status | Notes |
+|------|--------|-------|
+| `ytq.db` | NEW | SQLite database holding queue + metadata tables |
+| `queue.json` | Migrated -> `.bak` | One-time import on first run; original kept as backup |
+| `metadata.json` | Migrated -> `.bak` | Same |
+| `categories.json` | Unchanged | Tiny, rarely written |
+| `config.json` | Unchanged | Rarely written |
+| `history/*.jsonl` | Unchanged | Append-only logs already O(1) |
+| `queue.json.lock` | Removed | Replaced by SQLite WAL mode |
+
+### Design Principles
+
+1. **Hot-path writes are O(1)** — `add`, `next`, `remove`, `random` issue a single indexed SQL statement instead of rewriting the full queue file.
+2. **Transparent migration** — On first run after upgrade, legacy JSON files are imported into SQLite within a single transaction. Originals are renamed to `.bak` and retained indefinitely.
+3. **No async runtime** — Uses `rusqlite` (synchronous), matching ytq's existing synchronous design. No tokio dependency.
+4. **Bundled SQLite** — `rusqlite` is built with `features = ["bundled", "chrono"]` so users have zero runtime dependencies and `DateTime<Utc>` round-trips natively.
+5. **Event log stays as JSONL** — Append-only history doesn't benefit from a database; partitioned monthly files remain.
+
+### Implementation Phases
+
+- [x] **Phase 1: Database module**
+  - [x] Add `rusqlite = { version = "0.39", features = ["bundled", "chrono"] }`
+  - [x] Remove `fd-lock` dependency
+  - [x] New `src/db.rs` with `Db` struct, schema init, PRAGMAs (WAL, foreign_keys)
+  - [x] In-memory test harness via `Connection::open_in_memory()`
+
+- [x] **Phase 2: Schema**
+  - [x] `queue` table: id PK, url, added_at, position (monotonic for FIFO/LIFO)
+  - [x] `metadata` table: id PK, full VideoMeta columns, tags as JSON TEXT with `CHECK (json_valid(tags))`
+  - [x] Indexes on `queue.position`, `metadata.channel`, `metadata.category_id`
+
+- [x] **Phase 3: Command migration**
+  - [x] `add` -> `INSERT OR IGNORE` (dedup via PRIMARY KEY)
+  - [x] `next` (default) -> `DELETE ... WHERE position = MIN/MAX(position) RETURNING *`
+  - [x] `next <target>` / `remove` -> `DELETE WHERE id = ? RETURNING *`
+  - [x] `random` -> `ORDER BY RANDOM() LIMIT 1` then delete
+  - [x] `list` / `peek` -> indexed reads, optional join with metadata
+  - [x] `fetch` upserts -> single transaction with `INSERT ... ON CONFLICT`
+  - [x] `stats` -> materialize metadata HashMap from db (stats.rs unchanged)
+  - [x] `info` -> show db path + row counts
+
+- [x] **Phase 4: One-time migration**
+  - [x] On `Db::open`, detect legacy `queue.json` and empty db -> import in one transaction
+  - [x] Rename `queue.json` -> `queue.json.bak`, `metadata.json` -> `metadata.json.bak`
+  - [x] Print summary line with row counts
+
+- [x] **Phase 5: Tests**
+  - [x] Dedup, FIFO/LIFO ordering, random pop, remove
+  - [x] Metadata upsert preserves tombstones
+  - [x] Legacy JSON import fixture
+  - [x] Tags array round-trip through JSON TEXT column
+
+---
+
 ## Future Considerations
 
 Ideas that may be explored later:
@@ -153,6 +213,11 @@ Ideas that may be explored later:
 - Paginated list output — Show first 100 videos by default, with `--limit N` and `--all` flags
 - Exponential backoff for YouTube API rate limits
 - Additional metadata sources that don't require an API key
+- Rewrite `stats` aggregations as SQL `GROUP BY` queries (currently materialize a HashMap from SQLite then aggregate in Rust)
+- `ytq export` command to dump the SQLite database back to JSON for portability
+- `ytq vacuum` wrapper around SQLite `VACUUM` for users who heavily churn the queue
+- Migrate event history from JSONL to SQLite if append-only log scans ever become a bottleneck (currently bounded by `stats` invocations only)
+- Auto-delete legacy `queue.json.bak` and `metadata.json.bak` after a successful run, instead of keeping them indefinitely
 
 ---
 

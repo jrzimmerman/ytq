@@ -149,7 +149,7 @@ ytq fetch --history
 ytq fetch --refresh-categories
 ```
 
-Metadata is stored in a separate `metadata.json` file, keeping your queue data small and fast. Video categories are cached in `categories.json` and only fetched on first run (or with `--refresh-categories`).
+Metadata is stored in the `metadata` table inside `ytq.db`, keeping reads indexed and writes fast. Video categories are cached in `categories.json` and only fetched on first run (or with `--refresh-categories`).
 
 When metadata is available, `list` and `peek` show enriched output with video titles, channels, and durations:
 
@@ -209,10 +209,105 @@ ytq uses platform-specific paths for data storage. Run `ytq info` to see where y
 | File | Purpose |
 |------|---------|
 | `config.json` | User configuration (mode, offline, API key) |
-| `queue.json` | Current video queue |
-| `metadata.json` | Video metadata cache (title, channel, duration, tags) |
+| `ytq.db` | SQLite database holding the queue and metadata tables |
 | `categories.json` | YouTube video category lookup table |
 | `history/*.jsonl` | Event history logs (partitioned by month) |
+
+Earlier versions of ytq stored the queue and metadata as `queue.json` and `metadata.json`. On first run after upgrading, those files are imported into `ytq.db` automatically — see [SQLite Migration](#sqlite-migration) below.
+
+## SQLite Migration
+
+ytq originally stored the queue and metadata as JSON files. As personal backlogs grew past several thousand videos, every `ytq add` had to rewrite the full `queue.json`, making batch tools (for example [`youtube-tab-manager`](https://github.com/jrzimerman/youtube-tab-manager)) painfully slow. Storage now lives in a single SQLite database at `ytq.db` with indexed primary keys, write-ahead logging, and O(1) inserts.
+
+### When the migration runs
+
+The migration is automatic and one-time. It runs the first time any `ytq` command opens the database after upgrading, provided both of the following are true:
+
+- `ytq.db` is missing or has empty `queue` and `metadata` tables.
+- A legacy `queue.json` and/or `metadata.json` exists in the data directory.
+
+On success you'll see a one-line summary on stderr, for example:
+
+```
+Migrated 13472 video(s) and 13552 metadata entrie(s) to SQLite.
+```
+
+After the import:
+
+- `queue.json` is renamed to `queue.json.bak`.
+- `metadata.json` is renamed to `metadata.json.bak`.
+- The legacy `queue.json.lock` (used by the previous file-locking layer) is removed.
+- All future writes go to `ytq.db`. No code path ever reads the `.bak` files again.
+
+If the import fails midway, the transaction rolls back and the `.bak` files are not created — you can re-run any `ytq` command to retry once the underlying problem is fixed.
+
+### How to verify the migration
+
+Run `ytq info` after upgrading. Pre-migration, the output ends with `Database File Exists? false`. Post-migration, it prints row counts:
+
+```
+Data Paths
+---------------
+Config:     /Users/you/.config/ytq/config.json
+Database:   /Users/you/.local/share/ytq/ytq.db
+Categories: /Users/you/.local/share/ytq/categories.json
+History:    /Users/you/.local/share/ytq/history
+Queue Rows:    13472
+Metadata Rows: 13552
+```
+
+Cross-check by comparing against the legacy files:
+
+```bash
+# Count videos in the legacy queue.json.bak vs the migrated db
+jq 'length' ~/.local/share/ytq/queue.json.bak
+ytq info | grep "Queue Rows"
+
+# Count metadata entries
+jq 'length' ~/.local/share/ytq/metadata.json.bak
+ytq info | grep "Metadata Rows"
+
+# Spot-check ordering
+ytq list | head -5
+```
+
+The row counts should match exactly.
+
+### How to test the migration safely
+
+If you want to dry-run the migration without touching your real data:
+
+```bash
+# 1. Snapshot your current data dir
+cp -a ~/.local/share/ytq ~/.local/share/ytq.pre-migration-backup
+
+# 2. Run any ytq command (info is the safest — it does nothing else)
+ytq info
+
+# 3. Verify the migration summary printed to stderr and row counts look right
+ytq info
+
+# 4. If anything looks off, roll back by restoring the snapshot:
+rm -rf ~/.local/share/ytq
+mv ~/.local/share/ytq.pre-migration-backup ~/.local/share/ytq
+```
+
+On Windows, substitute `%APPDATA%\ytq` for `~/.local/share/ytq`.
+
+### How to clean up after the migration
+
+Once you've confirmed the migration worked and your queue looks right, the `.bak` files are safe to delete. They are never read again by ytq.
+
+```bash
+# Remove the legacy JSON files
+rm ~/.local/share/ytq/queue.json.bak
+rm ~/.local/share/ytq/metadata.json.bak
+
+# If you took a pre-migration snapshot during testing, remove that too
+rm -rf ~/.local/share/ytq.pre-migration-backup
+```
+
+There's no rush — the `.bak` files are kept indefinitely so you can hold on to them as long as you like. They sit alongside `ytq.db` but don't grow or interfere with operations.
 
 ## Development
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::db::Db;
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
 use crate::stats::DateRange;
 use crate::{paths, stats, store, youtube, youtube_api};
@@ -7,30 +8,22 @@ use crate::{paths, stats, store, youtube, youtube_api};
 use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
-use rand::RngExt;
 
 pub fn add(input: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
+    let db = Db::open(&paths)?;
 
-    // Normalize input before acquiring lock
+    // Normalize input before opening the queue
     let id = youtube::extract_video_id(input)?;
     let url = youtube::build_canonical_url(&id);
 
-    let added = store::with_queue(&paths, |queue| {
-        // Deduplicate
-        if queue.iter().any(|v| v.id == id) {
-            return Ok(false);
-        }
+    let video = Video {
+        id: id.clone(),
+        url,
+        added_at: Utc::now(),
+    };
 
-        let video = Video {
-            id: id.clone(),
-            url: url.clone(),
-            added_at: Utc::now(),
-        };
-
-        queue.push(video);
-        Ok(true)
-    })?;
+    let added = db.add_video(&video)?;
 
     if added {
         let event = Event {
@@ -58,41 +51,30 @@ pub fn add(input: &str) -> Result<()> {
 pub fn next(target: Option<&str>) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file);
+    let db = Db::open(&paths)?;
 
-    // If a specific target is provided, parse it before acquiring the lock
+    // If a specific target is provided, parse it first
     let target_id = target.map(youtube::extract_video_id).transpose()?;
 
-    // Remove the video from queue while holding the lock
-    let video = store::with_queue(&paths, |queue| {
-        if queue.is_empty() {
-            return Ok(None);
-        }
-
-        let video = match &target_id {
-            // Specific video requested - find by ID
-            Some(id) => {
-                let idx = queue
-                    .iter()
-                    .position(|v| v.id == *id)
-                    .ok_or_else(|| anyhow::anyhow!("video with ID '{id}' not found in queue"))?;
-                queue.remove(idx)
+    let video = match target_id {
+        Some(id) => {
+            let removed = db.remove_video(&id)?;
+            if removed.is_none() {
+                bail!("video with ID '{id}' not found in queue");
             }
-            // No target - use mode-based selection
-            None => match cfg.mode {
-                Mode::Queue => queue.remove(0),
-                Mode::Stack => queue.pop().expect("queue verified non-empty"),
-            },
-        };
-
-        Ok(Some(video))
-    })?;
+            removed
+        }
+        None => match cfg.mode {
+            Mode::Queue => db.pop_front()?,
+            Mode::Stack => db.pop_back()?,
+        },
+    };
 
     let Some(video) = video else {
         println!("{}", "Queue is empty.".yellow());
         return Ok(());
     };
 
-    // Log event and open video (outside the lock)
     let duration = Utc::now().signed_duration_since(video.added_at);
     let sec_in_queue = duration.num_seconds();
 
@@ -113,27 +95,13 @@ pub fn next(target: Option<&str>) -> Result<()> {
 
 pub fn remove(target: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
+    let db = Db::open(&paths)?;
 
-    // Extract ID from input before acquiring lock
     let target_id = youtube::extract_video_id(target)?;
-
-    let video = store::with_queue(&paths, |queue| {
-        if queue.is_empty() {
-            return Ok(None);
-        }
-
-        // Find by ID
-        let idx = queue
-            .iter()
-            .position(|v| v.id == target_id)
-            .ok_or_else(|| anyhow::anyhow!("video with ID '{target_id}' not found in queue"))?;
-
-        Ok(Some(queue.remove(idx)))
-    })?;
+    let video = db.remove_video(&target_id)?;
 
     let Some(video) = video else {
-        println!("{}", "Queue is empty.".yellow());
-        return Ok(());
+        bail!("video with ID '{target_id}' not found in queue");
     };
 
     let event = Event {
@@ -151,28 +119,28 @@ pub fn remove(target: &str) -> Result<()> {
 pub fn list() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file);
+    let db = Db::open(&paths)?;
 
-    // Load metadata if online mode is enabled
     let metadata = if !cfg.offline {
-        store::load_metadata(&paths.metadata_file)
+        db.load_all_metadata()?
     } else {
         HashMap::new()
     };
 
-    store::with_queue_read(&paths, |queue| {
-        if queue.is_empty() {
-            println!("{}", "Queue is empty.".yellow());
-            return;
-        }
+    let queue = db.list_videos()?;
+    if queue.is_empty() {
+        println!("{}", "Queue is empty.".yellow());
+        return Ok(());
+    }
 
-        println!("{} videos in queue:", queue.len());
+    println!("{} videos in queue:", queue.len());
 
-        if cfg.offline {
-            print_list_offline(queue);
-        } else {
-            print_list_online(queue, &metadata);
-        }
-    })
+    if cfg.offline {
+        print_list_offline(&queue);
+    } else {
+        print_list_online(&queue, &metadata);
+    }
+    Ok(())
 }
 
 fn print_list_offline(queue: &[Video]) {
@@ -291,36 +259,29 @@ fn truncate(s: &str, max: usize) -> String {
 pub fn peek(n: usize) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file);
+    let db = Db::open(&paths)?;
 
     let metadata = if !cfg.offline {
-        store::load_metadata(&paths.metadata_file)
+        db.load_all_metadata()?
     } else {
         HashMap::new()
     };
 
-    store::with_queue_read(&paths, |queue| {
-        if queue.is_empty() {
-            println!("{}", "Queue is empty.".yellow());
-            return;
-        }
+    let slice = db.peek_videos(n, &cfg.mode)?;
+    if slice.is_empty() {
+        println!("{}", "Queue is empty.".yellow());
+        return Ok(());
+    }
 
-        // Collect the slice based on mode
-        let slice: Vec<&Video> = match cfg.mode {
-            Mode::Queue => queue.iter().take(n).collect(),
-            Mode::Stack => queue.iter().rev().take(n).collect(),
-        };
+    let actual = slice.len();
+    println!("Next {actual} video(s) ({:?} mode):", cfg.mode);
 
-        let actual = slice.len();
-        println!("Next {actual} video(s) ({:?} mode):", cfg.mode);
-
-        // Reuse the same tabular format as list
-        let videos: Vec<Video> = slice.into_iter().cloned().collect();
-        if cfg.offline {
-            print_list_offline(&videos);
-        } else {
-            print_list_online(&videos, &metadata);
-        }
-    })
+    if cfg.offline {
+        print_list_offline(&slice);
+    } else {
+        print_list_online(&slice, &metadata);
+    }
+    Ok(())
 }
 
 pub fn stats(
@@ -333,6 +294,7 @@ pub fn stats(
     to: Option<String>,
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
+    let db = Db::open(&paths)?;
 
     // Resolve date range from flags
     let range = resolve_date_range(all, week, month, year, from, to)?;
@@ -341,14 +303,12 @@ pub fn stats(
     let all_events = store::stream_history(&paths.history_dir);
     let filtered = stats::filter_events(&all_events, &range);
 
-    // Load metadata opportunistically (no network requests)
-    let metadata = store::load_metadata(&paths.metadata_file);
+    // Load metadata + categories (categories.json still lives on disk)
+    let metadata = db.load_all_metadata()?;
     let categories = store::load_categories(&paths.categories_file);
 
     // Get current queue video IDs for queue profile stats
-    let queue_ids = store::with_queue_read(&paths, |queue| {
-        queue.iter().map(|v| v.id.clone()).collect::<Vec<_>>()
-    })?;
+    let queue_ids = db.queue_ids()?;
 
     // Check whether we have any useful metadata (for queue or watched videos)
     let has_metadata = queue_ids
@@ -475,17 +435,17 @@ pub fn config(key: &str, value: &str) -> Result<()> {
 
 pub fn info() -> Result<()> {
     let paths = paths::AppPaths::init()?;
+    // Opening the db will run the one-time migration on first run.
+    let db = Db::open(&paths)?;
 
     println!("{}", "Data Paths".bold());
     println!("---------------");
     println!("Config:     {}", paths.config_file.display());
-    println!("Queue:      {}", paths.queue_file.display());
-    println!("Metadata:   {}", paths.metadata_file.display());
+    println!("Database:   {}", paths.db_file.display());
     println!("Categories: {}", paths.categories_file.display());
     println!("History:    {}", paths.history_dir.display());
-
-    let queue_exists = paths.queue_file.exists();
-    println!("Queue File Exists? {queue_exists}");
+    println!("Queue Rows:    {}", db.queue_len()?);
+    println!("Metadata Rows: {}", db.metadata_len()?);
 
     Ok(())
 }
@@ -501,6 +461,7 @@ pub fn fetch(
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file);
+    let db = Db::open(&paths)?;
 
     // Check offline mode
     if cfg.offline {
@@ -539,7 +500,7 @@ pub fn fetch(
             .collect::<Result<Vec<_>>>()?;
         (ids, true)
     } else {
-        let ids = collect_ids_for_scope(&paths, queue_flag, history_flag, all_flag)?;
+        let ids = collect_ids_for_scope(&db, &paths, queue_flag, history_flag, all_flag)?;
         (ids, false)
     };
 
@@ -548,7 +509,7 @@ pub fn fetch(
     ids_to_fetch.dedup();
 
     // Load existing metadata
-    let mut metadata = store::load_metadata(&paths.metadata_file);
+    let metadata = db.load_all_metadata()?;
 
     // For scope-based fetches, filter out IDs that already have metadata.
     // Also skip unavailable (tombstone) entries unless --force is passed.
@@ -589,33 +550,26 @@ pub fn fetch(
         .map(|id| id.as_str())
         .collect();
 
-    // Merge fetched entries into existing metadata (upsert)
-    for meta in fetched {
-        metadata.insert(meta.id.clone(), meta);
-    }
-
-    // Store tombstone entries for videos the API returned nothing for
+    // Build the full batch: fetched entries + tombstones for missing IDs.
+    let mut upsert_batch: Vec<VideoMeta> = fetched;
     let now = Utc::now();
     for id in &missing_ids {
-        metadata.insert(
-            id.to_string(),
-            VideoMeta {
-                id: id.to_string(),
-                title: String::new(),
-                channel: String::new(),
-                channel_id: String::new(),
-                duration: String::new(),
-                duration_seconds: 0,
-                published_at: now,
-                category_id: String::new(),
-                tags: vec![],
-                fetched_at: now,
-                unavailable: true,
-            },
-        );
+        upsert_batch.push(VideoMeta {
+            id: id.to_string(),
+            title: String::new(),
+            channel: String::new(),
+            channel_id: String::new(),
+            duration: String::new(),
+            duration_seconds: 0,
+            published_at: now,
+            category_id: String::new(),
+            tags: vec![],
+            fetched_at: now,
+            unavailable: true,
+        });
     }
 
-    store::save_metadata(&paths.metadata_file, &metadata)?;
+    db.upsert_metadata_batch(&upsert_batch)?;
 
     println!("{} Fetched metadata for {count} video(s).", "Done.".green());
 
@@ -636,6 +590,7 @@ pub fn fetch(
 /// Collects video IDs based on the scope flags.
 /// Default (no flags) behaves as --queue.
 fn collect_ids_for_scope(
+    db: &Db,
     paths: &paths::AppPaths,
     queue_flag: bool,
     history_flag: bool,
@@ -648,11 +603,7 @@ fn collect_ids_for_scope(
     let use_history = all_flag || history_flag;
 
     if use_queue {
-        store::with_queue_read(paths, |queue| {
-            for v in queue {
-                ids.push(v.id.clone());
-            }
-        })?;
+        ids.extend(db.queue_ids()?);
     }
 
     if use_history {
@@ -667,15 +618,9 @@ fn collect_ids_for_scope(
 
 pub fn random() -> Result<()> {
     let paths = paths::AppPaths::init()?;
+    let db = Db::open(&paths)?;
 
-    let video = store::with_queue(&paths, |queue| {
-        if queue.is_empty() {
-            return Ok(None);
-        }
-
-        let idx = rand::rng().random_range(0..queue.len());
-        Ok(Some(queue.remove(idx)))
-    })?;
+    let video = db.pop_random()?;
 
     let Some(video) = video else {
         println!("{}", "Queue is empty.".yellow());
