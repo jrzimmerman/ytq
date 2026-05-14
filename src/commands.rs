@@ -565,36 +565,63 @@ pub fn fetch(
         .map(|id| id.as_str())
         .collect();
 
-    // Build the full batch: fetched entries + tombstones for missing IDs.
+    // For IDs the API didn't return, decide whether to tombstone or preserve
+    // existing data:
+    //   - If we already have GOOD metadata (unavailable=false), keep it. This
+    //     is critical for --force refetches: a transient API failure should
+    //     never destroy known-good metadata.
+    //   - Otherwise (no existing row, or existing row is itself a tombstone),
+    //     write/refresh a tombstone so we don't keep retrying on every run.
     let mut upsert_batch: Vec<VideoMeta> = fetched;
     let now = Utc::now();
+    let mut preserved_ids: Vec<&str> = Vec::new();
+    let mut newly_tombstoned_ids: Vec<&str> = Vec::new();
     for id in &missing_ids {
-        upsert_batch.push(VideoMeta {
-            id: id.to_string(),
-            title: String::new(),
-            channel: String::new(),
-            channel_id: String::new(),
-            duration: String::new(),
-            duration_seconds: 0,
-            published_at: now,
-            category_id: String::new(),
-            tags: vec![],
-            fetched_at: now,
-            unavailable: true,
-        });
+        match metadata.get(*id) {
+            Some(existing) if !existing.unavailable => {
+                preserved_ids.push(id);
+            }
+            _ => {
+                newly_tombstoned_ids.push(id);
+                upsert_batch.push(VideoMeta {
+                    id: id.to_string(),
+                    title: String::new(),
+                    channel: String::new(),
+                    channel_id: String::new(),
+                    duration: String::new(),
+                    duration_seconds: 0,
+                    published_at: now,
+                    category_id: String::new(),
+                    tags: vec![],
+                    fetched_at: now,
+                    unavailable: true,
+                });
+            }
+        }
     }
 
     db.upsert_metadata_batch(&upsert_batch)?;
 
     println!("{} Fetched metadata for {count} video(s).", "Done.".green());
 
-    if !missing_ids.is_empty() {
+    if !newly_tombstoned_ids.is_empty() {
         println!(
             "{} {} video(s) returned no metadata (may be private, age-restricted, or deleted):",
             "Note:".yellow(),
-            missing_ids.len()
+            newly_tombstoned_ids.len()
         );
-        for id in &missing_ids {
+        for id in &newly_tombstoned_ids {
+            println!("  - {id}");
+        }
+    }
+
+    if !preserved_ids.is_empty() {
+        println!(
+            "{} {} video(s) returned no metadata this time; keeping existing metadata:",
+            "Note:".yellow(),
+            preserved_ids.len()
+        );
+        for id in &preserved_ids {
             println!("  - {id}");
         }
     }

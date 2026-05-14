@@ -602,6 +602,38 @@ mod tests {
     }
 
     #[test]
+    fn upsert_metadata_only_touches_ids_in_batch() {
+        // Locks in the invariant that fetch relies on: upserting a batch that
+        // does NOT contain id X must leave X's existing row untouched. The
+        // fetch command depends on this to preserve good metadata when the
+        // YouTube API fails to return a video on a --force refresh.
+        let db = Db::open_in_memory().unwrap();
+
+        let good = sample_meta("aaaaaaaaaa1", "Good Channel");
+        let tombstone = {
+            let mut m = sample_meta("bbbbbbbbbb2", "");
+            m.title.clear();
+            m.channel.clear();
+            m.unavailable = true;
+            m
+        };
+        db.upsert_metadata_batch(&[good.clone(), tombstone])
+            .unwrap();
+
+        // Now upsert a batch that only touches a third id. Neither of the
+        // existing rows should change.
+        let third = sample_meta("cccccccccc3", "Third Channel");
+        db.upsert_metadata_batch(&[third]).unwrap();
+
+        let all = db.load_all_metadata().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all["aaaaaaaaaa1"].channel, "Good Channel");
+        assert!(!all["aaaaaaaaaa1"].unavailable);
+        assert!(all["bbbbbbbbbb2"].unavailable);
+        assert_eq!(all["cccccccccc3"].channel, "Third Channel");
+    }
+
+    #[test]
     fn load_all_metadata_roundtrips_tags_array() {
         let db = Db::open_in_memory().unwrap();
         let mut m = sample_meta("aaaaaaaaaa1", "X");
