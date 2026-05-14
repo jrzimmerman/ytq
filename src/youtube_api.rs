@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::models::VideoMeta;
+use crate::youtube;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -89,6 +90,16 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
 
         for item in items {
             let id = item["id"].as_str().unwrap_or_default().to_string();
+
+            // Defense in depth: skip any response item whose id doesn't match
+            // the canonical 11-character video ID format. The YouTube API
+            // should never return malformed IDs, but persisting only validated
+            // values keeps the database invariants identical to direct adds.
+            if !youtube::is_valid_id_format(&id) {
+                eprintln!("Warning: Skipping API response item with invalid id '{id}'");
+                continue;
+            }
+
             let snippet = &item["snippet"];
             let content_details = &item["contentDetails"];
 

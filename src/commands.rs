@@ -416,6 +416,11 @@ pub fn config(key: &str, value: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let mut cfg = store::load_config(&paths.config_file);
 
+    // Trim incidental whitespace so users pasting values with leading/trailing
+    // spaces (especially API keys) don't end up with stored garbage.
+    let key = key.trim();
+    let value = value.trim();
+
     match key {
         "mode" => match value.to_lowercase().as_str() {
             "stack" => cfg.mode = Mode::Stack,
@@ -428,6 +433,9 @@ pub fn config(key: &str, value: &str) -> Result<()> {
             _ => bail!("invalid offline value '{value}': use 'true' or 'false'"),
         },
         "youtube_api_key" => {
+            if value.is_empty() {
+                bail!("youtube_api_key cannot be empty");
+            }
             cfg.youtube_api_key = Some(value.to_string());
         }
         _ => bail!(
