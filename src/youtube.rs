@@ -150,7 +150,11 @@ pub fn build_canonical_url(video_id: &str) -> String {
     format!("https://www.youtube.com/watch?v={video_id}")
 }
 
-fn is_valid_id_format(id: &str) -> bool {
+/// Returns true if `id` matches the canonical 11-character YouTube video ID
+/// format (A-Z, a-z, 0-9, hyphen, underscore). Exposed so that values arriving
+/// from external sources (e.g., the YouTube Data API) can be re-validated
+/// before being persisted.
+pub fn is_valid_id_format(id: &str) -> bool {
     VIDEO_ID_RE.is_match(id)
 }
 
@@ -495,5 +499,23 @@ mod tests {
                 .to_string()
                 .contains("Playlist URLs are not supported")
         );
+    }
+
+    // === Public ID format validator ===
+    #[test]
+    fn is_valid_id_format_accepts_canonical_ids() {
+        assert!(is_valid_id_format("dQw4w9WgXcQ"));
+        assert!(is_valid_id_format("abc-_123ABC"));
+        assert!(is_valid_id_format("-wtIMTCHWuI"));
+    }
+
+    #[test]
+    fn is_valid_id_format_rejects_bad_inputs() {
+        assert!(!is_valid_id_format(""));
+        assert!(!is_valid_id_format("short"));
+        assert!(!is_valid_id_format("waytoolongforavideoid"));
+        assert!(!is_valid_id_format("invalid char!"));
+        assert!(!is_valid_id_format("dQw4w9WgXcQ\n")); // trailing newline
+        assert!(!is_valid_id_format(" dQw4w9WgXcQ")); // leading space
     }
 }
