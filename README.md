@@ -229,7 +229,7 @@ The migration is automatic and one-time. It runs the first time any `ytq` comman
 On success you'll see a one-line summary on stderr, for example:
 
 ```
-Migrated 13472 video(s) and 13552 metadata entrie(s) to SQLite.
+Migrated 13472 video(s) and 13552 metadata entries to SQLite.
 ```
 
 After the import:
@@ -243,7 +243,7 @@ If the import fails midway, the transaction rolls back and the `.bak` files are 
 
 ### How to verify the migration
 
-Run `ytq info` after upgrading. Pre-migration, the output ends with `Database File Exists? false`. Post-migration, it prints row counts:
+Run `ytq info` after upgrading. Post-migration, it prints the database path along with row counts for the `queue` and `metadata` tables:
 
 ```
 Data Paths

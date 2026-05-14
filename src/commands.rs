@@ -97,6 +97,13 @@ pub fn remove(target: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths)?;
 
+    // Preserve the legacy friendly-exit behavior when the queue is empty so
+    // scripts that call `ytq remove` idempotently don't start failing.
+    if db.queue_len()? == 0 {
+        println!("{}", "Queue is empty.".yellow());
+        return Ok(());
+    }
+
     let target_id = youtube::extract_video_id(target)?;
     let video = db.remove_video(&target_id)?;
 

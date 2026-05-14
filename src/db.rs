@@ -167,7 +167,7 @@ impl Db {
         let _ = fs::remove_file(paths.queue_file.with_extension("json.lock"));
 
         eprintln!(
-            "Migrated {imported_videos} video(s) and {imported_meta} metadata entrie(s) to SQLite."
+            "Migrated {imported_videos} video(s) and {imported_meta} metadata entries to SQLite."
         );
 
         Ok(())
