@@ -3,82 +3,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-use crate::models::{Config, Event, Video, VideoMeta};
-use crate::paths::AppPaths;
+use crate::models::{Config, Event};
 
 use anyhow::Result;
 use chrono::Datelike;
-use fd_lock::RwLock;
-
-/// Acquires an exclusive lock on the queue, loads it, runs the callback with
-/// mutable access, and saves the result. The lock is held for the entire operation.
-///
-/// Use this for any operation that modifies the queue (add, remove, next).
-pub fn with_queue<T, F>(paths: &AppPaths, f: F) -> Result<T>
-where
-    F: FnOnce(&mut Vec<Video>) -> Result<T>,
-{
-    // Open/create the lock file
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&paths.lock_file)?;
-
-    // Acquire exclusive lock (blocks until available)
-    let mut lock = RwLock::new(lock_file);
-    let _guard = lock.write()?;
-
-    // Load, modify, save while holding the lock
-    let mut queue = load_queue(&paths.queue_file);
-    let result = f(&mut queue)?;
-    save_queue(&paths.queue_file, &queue)?;
-
-    Ok(result)
-    // Lock released when _guard drops
-}
-
-/// Acquires a shared lock on the queue and loads it for read-only access.
-///
-/// Use this for operations that only read the queue (list, peek).
-pub fn with_queue_read<T, F>(paths: &AppPaths, f: F) -> Result<T>
-where
-    F: FnOnce(&[Video]) -> T,
-{
-    // Open/create the lock file
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&paths.lock_file)?;
-
-    // Acquire shared lock (blocks if exclusive lock held, allows multiple readers)
-    let lock = RwLock::new(lock_file);
-    let _guard = lock.read()?;
-
-    // Load and process while holding the lock
-    let queue = load_queue(&paths.queue_file);
-    let result = f(&queue);
-
-    Ok(result)
-    // Lock released when _guard drops
-}
-
-fn load_queue(path: &Path) -> Vec<Video> {
-    if let Ok(data) = fs::read_to_string(path) {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        Vec::new()
-    }
-}
-
-fn save_queue(path: &Path, queue: &[Video]) -> Result<()> {
-    let data = serde_json::to_string_pretty(queue)?;
-    fs::write(path, data)?;
-    Ok(())
-}
 
 pub fn load_config(path: &Path) -> Config {
     if let Ok(data) = fs::read_to_string(path) {
@@ -137,27 +65,9 @@ pub fn stream_history(history_dir: &Path) -> Vec<Event> {
     }
 
     // Sort logic is critical now that we read multiple files
-    events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    events.sort_by_key(|a| a.timestamp);
 
     events
-}
-
-/// Loads video metadata from metadata.json.
-/// Returns a HashMap keyed by video ID. Returns empty map if file is
-/// missing or contains invalid JSON.
-pub fn load_metadata(path: &Path) -> HashMap<String, VideoMeta> {
-    if let Ok(data) = fs::read_to_string(path) {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        HashMap::new()
-    }
-}
-
-/// Saves the full metadata map to metadata.json.
-pub fn save_metadata(path: &Path, metadata: &HashMap<String, VideoMeta>) -> Result<()> {
-    let data = serde_json::to_string_pretty(metadata)?;
-    fs::write(path, data)?;
-    Ok(())
 }
 
 /// Loads YouTube video categories from categories.json.
