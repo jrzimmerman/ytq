@@ -45,6 +45,13 @@ pub struct Db {
     conn: Connection,
 }
 
+/// A queue row removed by a command, including enough information to restore
+/// its original ordering if a subsequent history write fails.
+pub struct RemovedVideo {
+    pub video: Video,
+    position: i64,
+}
+
 impl Db {
     /// Opens the database at `paths.db_file`, initializes schema if needed, and
     /// runs the one-time JSON->SQLite migration if legacy files are present.
@@ -189,28 +196,41 @@ impl Db {
     }
 
     /// Removes and returns the front of the queue (lowest position).
+    #[cfg(test)]
     pub fn pop_front(&self) -> Result<Option<Video>> {
-        self.pop_by_extreme(true)
+        Ok(self.take_front()?.map(|removed| removed.video))
     }
 
     /// Removes and returns the back of the queue (highest position).
+    #[cfg(test)]
     pub fn pop_back(&self) -> Result<Option<Video>> {
-        self.pop_by_extreme(false)
+        Ok(self.take_back()?.map(|removed| removed.video))
     }
 
-    fn pop_by_extreme(&self, front: bool) -> Result<Option<Video>> {
+    pub fn take_front(&self) -> Result<Option<RemovedVideo>> {
+        self.take_by_extreme(true)
+    }
+
+    pub fn take_back(&self) -> Result<Option<RemovedVideo>> {
+        self.take_by_extreme(false)
+    }
+
+    fn take_by_extreme(&self, front: bool) -> Result<Option<RemovedVideo>> {
         let order = if front { "ASC" } else { "DESC" };
         let sql = format!(
             "DELETE FROM queue WHERE id = (SELECT id FROM queue ORDER BY position {order} LIMIT 1) \
-             RETURNING id, url, added_at"
+             RETURNING id, url, added_at, position"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let video = stmt
             .query_row([], |row| {
-                Ok(Video {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    added_at: row.get(2)?,
+                Ok(RemovedVideo {
+                    video: Video {
+                        id: row.get(0)?,
+                        url: row.get(1)?,
+                        added_at: row.get(2)?,
+                    },
+                    position: row.get(3)?,
                 })
             })
             .optional()?;
@@ -218,17 +238,25 @@ impl Db {
     }
 
     /// Removes and returns a random video from the queue.
+    #[cfg(test)]
     pub fn pop_random(&self) -> Result<Option<Video>> {
+        Ok(self.take_random()?.map(|removed| removed.video))
+    }
+
+    pub fn take_random(&self) -> Result<Option<RemovedVideo>> {
         let mut stmt = self.conn.prepare(
             "DELETE FROM queue WHERE id = (SELECT id FROM queue ORDER BY RANDOM() LIMIT 1) \
-             RETURNING id, url, added_at",
+             RETURNING id, url, added_at, position",
         )?;
         let video = stmt
             .query_row([], |row| {
-                Ok(Video {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    added_at: row.get(2)?,
+                Ok(RemovedVideo {
+                    video: Video {
+                        id: row.get(0)?,
+                        url: row.get(1)?,
+                        added_at: row.get(2)?,
+                    },
+                    position: row.get(3)?,
                 })
             })
             .optional()?;
@@ -238,19 +266,49 @@ impl Db {
     /// Removes the video with the given id and returns it. Returns Ok(None) when
     /// the id is not present.
     pub fn remove_video(&self, id: &str) -> Result<Option<Video>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("DELETE FROM queue WHERE id = ?1 RETURNING id, url, added_at")?;
+        Ok(self.take_video(id)?.map(|removed| removed.video))
+    }
+
+    pub fn take_video(&self, id: &str) -> Result<Option<RemovedVideo>> {
+        let mut stmt = self.conn.prepare_cached(
+            "DELETE FROM queue WHERE id = ?1 RETURNING id, url, added_at, position",
+        )?;
         let video = stmt
             .query_row(params![id], |row| {
-                Ok(Video {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    added_at: row.get(2)?,
+                Ok(RemovedVideo {
+                    video: Video {
+                        id: row.get(0)?,
+                        url: row.get(1)?,
+                        added_at: row.get(2)?,
+                    },
+                    position: row.get(3)?,
                 })
             })
             .optional()?;
         Ok(video)
+    }
+
+    /// Restores a removed queue row at its original position. Existing rows at
+    /// that position or later are shifted forward while preserving their order.
+    pub fn restore_video(&self, removed: &RemovedVideo) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE queue SET position = -position", [])?;
+        tx.execute(
+            "UPDATE queue SET position = CASE \
+             WHEN -position >= ?1 THEN -position + 1 ELSE -position END",
+            params![removed.position],
+        )?;
+        tx.execute(
+            "INSERT INTO queue (id, url, added_at, position) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                removed.video.id,
+                removed.video.url,
+                removed.video.added_at,
+                removed.position
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Lists all videos in FIFO order (oldest first).
@@ -527,6 +585,23 @@ mod tests {
         assert_eq!(db.queue_len().unwrap(), 1);
         let missing = db.remove_video("zzzzzzzzzz9").unwrap();
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn restore_video_preserves_original_order() {
+        let db = Db::open_in_memory().unwrap();
+        for id in ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"] {
+            db.add_video(&sample_video(id)).unwrap();
+        }
+
+        let removed = db.take_video("bbbbbbbbbb2").unwrap().unwrap();
+        db.add_video(&sample_video("dddddddddd4")).unwrap();
+        db.restore_video(&removed).unwrap();
+
+        assert_eq!(
+            db.queue_ids().unwrap(),
+            vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3", "dddddddddd4"]
+        );
     }
 
     #[test]

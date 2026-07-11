@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crate::models::{Action, Event, VideoMeta};
 use crate::youtube_api;
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, Timelike, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Days, Local, NaiveDate, TimeDelta, TimeZone, Timelike, Utc, Weekday,
+};
 use colored::Colorize;
 
 // ---------------------------------------------------------------------------
@@ -27,6 +29,13 @@ pub struct DateRange {
 }
 
 impl DateRange {
+    fn local_day_start(date: NaiveDate) -> Option<DateTime<Utc>> {
+        let local = Local
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+            .earliest()?;
+        Some(local.with_timezone(&Utc))
+    }
+
     /// No filtering — all-time.
     pub fn all_time() -> Self {
         Self {
@@ -46,30 +55,22 @@ impl DateRange {
 
     /// A specific month: YYYY-MM.
     pub fn specific_month(year: i32, month: u32) -> Option<Self> {
-        let start = NaiveDate::from_ymd_opt(year, month, 1)?
-            .and_hms_opt(0, 0, 0)?
-            .and_utc();
-        let end = if month == 12 {
+        let start_date = NaiveDate::from_ymd_opt(year, month, 1)?;
+        let end_date = if month == 12 {
             NaiveDate::from_ymd_opt(year + 1, 1, 1)?
         } else {
             NaiveDate::from_ymd_opt(year, month + 1, 1)?
-        }
-        .and_hms_opt(0, 0, 0)?
-        .and_utc();
+        };
         Some(Self {
-            start: Some(start),
-            end: Some(end),
+            start: Some(Self::local_day_start(start_date)?),
+            end: Some(Self::local_day_start(end_date)?),
         })
     }
 
     /// A specific year: YYYY.
     pub fn specific_year(year: i32) -> Option<Self> {
-        let start = NaiveDate::from_ymd_opt(year, 1, 1)?
-            .and_hms_opt(0, 0, 0)?
-            .and_utc();
-        let end = NaiveDate::from_ymd_opt(year + 1, 1, 1)?
-            .and_hms_opt(0, 0, 0)?
-            .and_utc();
+        let start = Self::local_day_start(NaiveDate::from_ymd_opt(year, 1, 1)?)?;
+        let end = Self::local_day_start(NaiveDate::from_ymd_opt(year + 1, 1, 1)?)?;
         Some(Self {
             start: Some(start),
             end: Some(end),
@@ -77,11 +78,16 @@ impl DateRange {
     }
 
     /// Custom range with optional start/end.
-    pub fn custom(from: Option<NaiveDate>, to: Option<NaiveDate>) -> Self {
-        Self {
-            start: from.and_then(|d| d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc())),
-            end: to.and_then(|d| d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc())),
-        }
+    pub fn custom(from: Option<NaiveDate>, to: Option<NaiveDate>) -> Option<Self> {
+        let start = match from {
+            Some(date) => Some(Self::local_day_start(date)?),
+            None => None,
+        };
+        let end = match to {
+            Some(date) => Some(Self::local_day_start(date.checked_add_days(Days::new(1))?)?),
+            None => None,
+        };
+        Some(Self { start, end })
     }
 
     /// Returns true if the timestamp falls within this range.
@@ -103,10 +109,17 @@ impl DateRange {
     pub fn label(&self) -> String {
         match (&self.start, &self.end) {
             (None, None) => "All Time".to_string(),
-            (Some(s), None) => format!("Since {}", s.format("%Y-%m-%d")),
-            (None, Some(e)) => format!("Before {}", e.format("%Y-%m-%d")),
+            (Some(s), None) => format!("Since {}", to_local(s).format("%Y-%m-%d")),
+            (None, Some(e)) => format!(
+                "Through {}",
+                to_local(&(*e - TimeDelta::nanoseconds(1))).format("%Y-%m-%d")
+            ),
             (Some(s), Some(e)) => {
-                format!("{} to {}", s.format("%Y-%m-%d"), e.format("%Y-%m-%d"))
+                format!(
+                    "{} to {}",
+                    to_local(s).format("%Y-%m-%d"),
+                    to_local(&(*e - TimeDelta::nanoseconds(1))).format("%Y-%m-%d")
+                )
             }
         }
     }
@@ -1749,6 +1762,7 @@ mod tests {
 
     #[test]
     fn date_range_specific_month() {
+        init_test_tz();
         let range = DateRange::specific_month(2025, 6).unwrap();
         let inside = Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap();
         let before = Utc.with_ymd_and_hms(2025, 5, 31, 23, 59, 59).unwrap();
@@ -1760,6 +1774,7 @@ mod tests {
 
     #[test]
     fn date_range_specific_month_december() {
+        init_test_tz();
         let range = DateRange::specific_month(2025, 12).unwrap();
         let inside = Utc.with_ymd_and_hms(2025, 12, 25, 0, 0, 0).unwrap();
         let after = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
@@ -1769,6 +1784,7 @@ mod tests {
 
     #[test]
     fn date_range_specific_year() {
+        init_test_tz();
         let range = DateRange::specific_year(2025).unwrap();
         let inside = Utc.with_ymd_and_hms(2025, 6, 15, 0, 0, 0).unwrap();
         let before = Utc.with_ymd_and_hms(2024, 12, 31, 23, 59, 59).unwrap();
@@ -1780,12 +1796,24 @@ mod tests {
 
     #[test]
     fn date_range_custom_from_only() {
+        init_test_tz();
         let from = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-        let range = DateRange::custom(Some(from), None);
+        let range = DateRange::custom(Some(from), None).unwrap();
         let inside = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
         let before = Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap();
         assert!(range.contains(&inside));
         assert!(!range.contains(&before));
+    }
+
+    #[test]
+    fn date_range_custom_to_includes_entire_day() {
+        init_test_tz();
+        let to = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
+        let range = DateRange::custom(None, Some(to)).unwrap();
+        let last_second = Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap();
+        let next_day = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        assert!(range.contains(&last_second));
+        assert!(!range.contains(&next_day));
     }
 
     #[test]
@@ -1795,8 +1823,9 @@ mod tests {
 
     #[test]
     fn date_range_label_specific_year() {
+        init_test_tz();
         let range = DateRange::specific_year(2025).unwrap();
-        assert_eq!(range.label(), "2025-01-01 to 2026-01-01");
+        assert_eq!(range.label(), "2025-01-01 to 2025-12-31");
     }
 
     // -- filter_events tests --

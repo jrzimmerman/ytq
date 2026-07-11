@@ -28,13 +28,12 @@ pub fn extract_video_id(input: &str) -> Result<String> {
     let id = if let Some(host) = parsed.host_str() {
         if host == "youtu.be" {
             // Case: youtu.be/ID
-            let path = parsed.path().trim_start_matches('/');
-            let id: String = path.chars().take(11).collect();
+            let id = parsed.path().trim_matches('/').to_string();
             if !is_valid_id_format(&id) {
                 bail!("Invalid video ID in youtu.be URL");
             }
             id
-        } else if host.ends_with("youtube.com") {
+        } else if host == "youtube.com" || host.ends_with(".youtube.com") {
             let path = parsed.path();
             let query = parsed.query();
 
@@ -90,8 +89,8 @@ const VIDEO_PATH_PREFIXES: &[&str] = &["/shorts/", "/live/", "/embed/", "/v/", "
 fn extract_id_from_path(path: &str) -> Option<String> {
     VIDEO_PATH_PREFIXES.iter().find_map(|prefix| {
         path.strip_prefix(prefix).and_then(|rest| {
-            let id: String = rest.chars().take(11).collect();
-            is_valid_id_format(&id).then_some(id)
+            let id = rest.strip_suffix('/').unwrap_or(rest);
+            is_valid_id_format(id).then(|| id.to_string())
         })
     })
 }
@@ -215,6 +214,12 @@ mod tests {
     }
 
     #[test]
+    fn domain_suffix_is_not_a_youtube_domain() {
+        let result = extract_video_id("https://notyoutube.com/watch?v=dQw4w9WgXcQ");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn missing_v_param() {
         let result = extract_video_id("https://youtube.com/watch");
         assert!(result.is_err());
@@ -250,6 +255,18 @@ mod tests {
     fn shorts_url_with_query_params() {
         let result = extract_video_id("https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share");
         assert_eq!(result.unwrap(), "dQw4w9WgXcQ");
+    }
+
+    #[test]
+    fn path_id_with_suffix_is_rejected() {
+        let result = extract_video_id("https://www.youtube.com/shorts/dQw4w9WgXcQsuffix");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn short_url_id_with_suffix_is_rejected() {
+        let result = extract_video_id("https://youtu.be/dQw4w9WgXcQsuffix");
+        assert!(result.is_err());
     }
 
     // === New tests for live URLs ===

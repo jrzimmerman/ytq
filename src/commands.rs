@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::db::Db;
+use crate::db::{Db, RemovedVideo};
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
 use crate::stats::DateRange;
 use crate::{paths, stats, store, youtube, youtube_api};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
 
@@ -32,7 +32,11 @@ pub fn add(input: &str) -> Result<()> {
             video_id: id.clone(),
             time_in_queue_sec: None,
         };
-        store::log_event(&paths.history_dir, &event)?;
+        if let Err(error) = store::log_event(&paths.history_dir, &event) {
+            db.remove_video(&id)
+                .context("failed to roll back queue insert after history write failed")?;
+            return Err(error);
+        }
 
         println!("{} {id}", "Added:".green());
 
@@ -58,23 +62,30 @@ pub fn next(target: Option<&str>) -> Result<()> {
 
     let video = match target_id {
         Some(id) => {
-            let removed = db.remove_video(&id)?;
+            let removed = db.take_video(&id)?;
             if removed.is_none() {
                 bail!("video with ID '{id}' not found in queue");
             }
             removed
         }
         None => match cfg.mode {
-            Mode::Queue => db.pop_front()?,
-            Mode::Stack => db.pop_back()?,
+            Mode::Queue => db.take_front()?,
+            Mode::Stack => db.take_back()?,
         },
     };
 
-    let Some(video) = video else {
+    let Some(removed) = video else {
         println!("{}", "Queue is empty.".yellow());
         return Ok(());
     };
 
+    open_and_record_watch(&db, &paths, removed)?;
+
+    Ok(())
+}
+
+fn open_and_record_watch(db: &Db, paths: &paths::AppPaths, removed: RemovedVideo) -> Result<()> {
+    let video = &removed.video;
     let duration = Utc::now().signed_duration_since(video.added_at);
     let sec_in_queue = duration.num_seconds();
 
@@ -85,10 +96,18 @@ pub fn next(target: Option<&str>) -> Result<()> {
         time_in_queue_sec: Some(sec_in_queue),
     };
 
-    store::log_event(&paths.history_dir, &event)?;
-
     println!("{} {}", "Opening:".blue(), video.url);
-    open::that(&video.url)?;
+    if let Err(error) = open::that(&video.url) {
+        db.restore_video(&removed)
+            .context("failed to restore video after browser launch failed")?;
+        return Err(error.into());
+    }
+
+    if let Err(error) = store::log_event(&paths.history_dir, &event) {
+        db.restore_video(&removed)
+            .context("failed to restore video after history write failed")?;
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -105,11 +124,13 @@ pub fn remove(target: &str) -> Result<()> {
     }
 
     let target_id = youtube::extract_video_id(target)?;
-    let video = db.remove_video(&target_id)?;
+    let video = db.take_video(&target_id)?;
 
-    let Some(video) = video else {
+    let Some(removed) = video else {
         bail!("video with ID '{target_id}' not found in queue");
     };
+
+    let video = &removed.video;
 
     let event = Event {
         timestamp: Utc::now(),
@@ -117,7 +138,11 @@ pub fn remove(target: &str) -> Result<()> {
         video_id: video.id.clone(),
         time_in_queue_sec: None,
     };
-    store::log_event(&paths.history_dir, &event)?;
+    if let Err(error) = store::log_event(&paths.history_dir, &event) {
+        db.restore_video(&removed)
+            .context("failed to restore video after history write failed")?;
+        return Err(error);
+    }
 
     println!("{} {}", "Removed:".red(), video.id);
     Ok(())
@@ -399,7 +424,13 @@ fn resolve_date_range(
                     .map_err(|_| anyhow::anyhow!("invalid --to date '{s}': expected YYYY-MM-DD"))
             })
             .transpose()?;
-        return Ok(DateRange::custom(from_date, to_date));
+        if let (Some(from), Some(to)) = (from_date, to_date)
+            && from > to
+        {
+            bail!("--from date must not be later than --to date");
+        }
+        return DateRange::custom(from_date, to_date)
+            .ok_or_else(|| anyhow::anyhow!("failed to build custom date range"));
     }
 
     if all {
@@ -662,25 +693,14 @@ pub fn random() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths)?;
 
-    let video = db.pop_random()?;
+    let video = db.take_random()?;
 
-    let Some(video) = video else {
+    let Some(removed) = video else {
         println!("{}", "Queue is empty.".yellow());
         return Ok(());
     };
 
-    // Log event and open video
-    let duration = Utc::now().signed_duration_since(video.added_at);
-    let event = Event {
-        timestamp: Utc::now(),
-        action: Action::Watched,
-        video_id: video.id.clone(),
-        time_in_queue_sec: Some(duration.num_seconds()),
-    };
-    store::log_event(&paths.history_dir, &event)?;
-
-    println!("{} {}", "Opening:".blue(), video.url);
-    open::that(&video.url)?;
+    open_and_record_watch(&db, &paths, removed)?;
 
     Ok(())
 }
