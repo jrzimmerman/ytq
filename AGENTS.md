@@ -177,11 +177,10 @@ fn load(path: &Path) -> Result<String> {
 ### Persistence
 
 - Queue and metadata mutations go through the `Db` struct in `src/db.rs`.
-- Open one `Db` per command via `Db::open(&paths)` — this also runs the one-time JSON->SQLite migration on first call after upgrade.
+- Open one `Db` per command via `Db::open(&paths.db_file)`.
 - Concurrency is handled by SQLite WAL mode (no file locking layer).
 - Config and categories are still JSON; history is append-only monthly JSONL.
 - Persistence helpers (for non-DB files) return defaults instead of failing on missing files.
-- See [README.md](README.md#sqlite-migration) for migration semantics and cleanup of legacy `.bak` files.
 
 ### Parsing and Validation
 

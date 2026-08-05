@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::models::{Mode, Video, VideoMeta};
-use crate::paths::AppPaths;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -55,16 +53,14 @@ pub struct RemovedVideo {
 }
 
 impl Db {
-    /// Opens the database at `paths.db_file`, initializes schema if needed, and
-    /// runs the one-time JSON->SQLite migration if legacy files are present.
-    pub fn open(paths: &AppPaths) -> Result<Self> {
-        let conn = Connection::open(&paths.db_file)
-            .with_context(|| format!("failed to open database: {}", paths.db_file.display()))?;
+    /// Opens the database at `path` and initializes its schema if needed.
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open database: {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))
             .context("failed to configure database busy timeout")?;
         let db = Self { conn };
         db.init_schema()?;
-        db.migrate_from_json(paths)?;
         Ok(db)
     }
 
@@ -81,126 +77,6 @@ impl Db {
         self.conn
             .execute_batch(SCHEMA_SQL)
             .context("failed to initialize database schema")?;
-        Ok(())
-    }
-
-    /// One-time import of legacy `queue.json` and `metadata.json`. Runs only when
-    /// the database tables are empty and the legacy files exist. On success, the
-    /// originals are renamed to `<name>.bak` and kept indefinitely.
-    fn migrate_from_json(&self, paths: &AppPaths) -> Result<()> {
-        // Only migrate when both tables are empty (i.e., a fresh db).
-        let queue_count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM queue", [], |r| r.get(0))?;
-        let meta_count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM metadata", [], |r| r.get(0))?;
-        if queue_count > 0 || meta_count > 0 {
-            return Ok(());
-        }
-
-        let queue_file_exists = paths.queue_file.exists();
-        let meta_file_exists = paths.metadata_file.exists();
-        if !queue_file_exists && !meta_file_exists {
-            return Ok(());
-        }
-
-        let queue_backup = paths.queue_file.with_extension("json.bak");
-        let metadata_backup = paths.metadata_file.with_extension("json.bak");
-        if queue_file_exists && queue_backup.exists() {
-            bail!(
-                "cannot migrate {} because backup {} already exists",
-                paths.queue_file.display(),
-                queue_backup.display()
-            );
-        }
-        if meta_file_exists && metadata_backup.exists() {
-            bail!(
-                "cannot migrate {} because backup {} already exists",
-                paths.metadata_file.display(),
-                metadata_backup.display()
-            );
-        }
-
-        let videos = if queue_file_exists {
-            load_legacy_queue(&paths.queue_file)?
-        } else {
-            Vec::new()
-        };
-        let metadata = if meta_file_exists {
-            load_legacy_metadata(&paths.metadata_file)?
-        } else {
-            HashMap::new()
-        };
-
-        let imported_videos = videos.len();
-        let imported_meta = metadata.len();
-
-        // Single transaction for the whole import.
-        let tx = self.conn.unchecked_transaction()?;
-        {
-            let mut q_stmt = tx.prepare(
-                "INSERT INTO queue (id, url, added_at, position) VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (idx, v) in videos.iter().enumerate() {
-                let position = i64::try_from(idx)
-                    .context("legacy queue is too large to represent in SQLite")?
-                    .checked_add(1)
-                    .context("legacy queue position overflow")?;
-                q_stmt.execute(params![v.id, v.url, v.added_at, position])?;
-            }
-            let mut m_stmt = tx.prepare(
-                "INSERT INTO metadata (id, title, channel, channel_id, duration, duration_seconds, \
-                 published_at, category_id, tags, fetched_at, unavailable) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            )?;
-            for m in metadata.values() {
-                let tags_json = serde_json::to_string(&m.tags)?;
-                let duration_seconds = duration_to_sql(m.duration_seconds)?;
-                m_stmt.execute(params![
-                    m.id,
-                    m.title,
-                    m.channel,
-                    m.channel_id,
-                    m.duration,
-                    duration_seconds,
-                    m.published_at,
-                    m.category_id,
-                    tags_json,
-                    m.fetched_at,
-                    m.unavailable as i64,
-                ])?;
-            }
-        }
-        tx.commit()?;
-
-        // Rename originals to .bak after successful import.
-        if queue_file_exists {
-            fs::rename(&paths.queue_file, &queue_backup).with_context(|| {
-                format!(
-                    "database import succeeded, but failed to rename {} to {}",
-                    paths.queue_file.display(),
-                    queue_backup.display()
-                )
-            })?;
-        }
-        if meta_file_exists {
-            fs::rename(&paths.metadata_file, &metadata_backup).with_context(|| {
-                format!(
-                    "database import succeeded, but failed to rename {} to {}",
-                    paths.metadata_file.display(),
-                    metadata_backup.display()
-                )
-            })?;
-        }
-
-        // Also remove the now-unused fd-lock file if present (legacy artifact).
-        let _ = fs::remove_file(paths.queue_file.with_extension("json.lock"));
-
-        eprintln!(
-            "Migrated {imported_videos} video(s) and {imported_meta} metadata entries to SQLite."
-        );
-
         Ok(())
     }
 
@@ -506,32 +382,25 @@ fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<VideoMeta> {
 }
 
 // ---------------------------------------------------------------
-// Legacy JSON loaders (used only during one-time migration)
-// ---------------------------------------------------------------
-
-fn load_legacy_queue(path: &Path) -> Result<Vec<Video>> {
-    let data =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let v: Vec<Video> = serde_json::from_str(&data)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(v)
-}
-
-fn load_legacy_metadata(path: &Path) -> Result<HashMap<String, VideoMeta>> {
-    let data =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let m: HashMap<String, VideoMeta> = serde_json::from_str(&data)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(m)
-}
-
-// ---------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_db_dir() -> std::path::PathBuf {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("ytq-db-{}-{id}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     fn sample_video(id: &str) -> Video {
         Video {
@@ -555,6 +424,19 @@ mod tests {
             fetched_at: Utc::now(),
             unavailable: false,
         }
+    }
+
+    #[test]
+    fn open_file_initializes_schema() {
+        let dir = temp_db_dir();
+        let path = dir.join("ytq.db");
+        let db = Db::open(&path).unwrap();
+
+        assert_eq!(db.queue_len().unwrap(), 0);
+        assert_eq!(db.metadata_len().unwrap(), 0);
+
+        drop(db);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -774,78 +656,5 @@ mod tests {
         }
         let ids = db.queue_ids().unwrap();
         assert_eq!(ids, vec!["aaaaaaaaaa1", "bbbbbbbbbb2"]);
-    }
-
-    #[test]
-    fn migration_imports_legacy_json_files() {
-        use std::io::Write;
-        let tmp = std::env::temp_dir().join(format!("ytq-migrate-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
-        let history_dir = tmp.join("history");
-        fs::create_dir_all(&history_dir).unwrap();
-
-        // Write a minimal legacy queue.json with two videos
-        let queue_file = tmp.join("queue.json");
-        let mut f = fs::File::create(&queue_file).unwrap();
-        let queue_json = r#"[
-            {"id":"aaaaaaaaaa1","url":"https://www.youtube.com/watch?v=aaaaaaaaaa1","added_at":"2026-01-01T00:00:00Z"},
-            {"id":"bbbbbbbbbb2","url":"https://www.youtube.com/watch?v=bbbbbbbbbb2","added_at":"2026-01-02T00:00:00Z"}
-        ]"#;
-        f.write_all(queue_json.as_bytes()).unwrap();
-        drop(f);
-
-        // Write a minimal legacy metadata.json with one entry
-        let metadata_file = tmp.join("metadata.json");
-        let mut f = fs::File::create(&metadata_file).unwrap();
-        let meta_json = r#"{
-            "aaaaaaaaaa1": {
-                "id":"aaaaaaaaaa1","title":"T","channel":"C","channel_id":"UC",
-                "duration":"PT1M","duration_seconds":60,
-                "published_at":"2026-01-01T00:00:00Z","category_id":"10",
-                "tags":["x","y"],"fetched_at":"2026-01-01T00:00:00Z","unavailable":false
-            }
-        }"#;
-        f.write_all(meta_json.as_bytes()).unwrap();
-        drop(f);
-
-        let paths = AppPaths {
-            config_file: tmp.join("config.json"),
-            queue_file: queue_file.clone(),
-            history_dir,
-            db_file: tmp.join("ytq.db"),
-            metadata_file: metadata_file.clone(),
-            categories_file: tmp.join("categories.json"),
-        };
-
-        let db = Db::open(&paths).unwrap();
-        assert_eq!(db.queue_len().unwrap(), 2);
-        assert_eq!(db.metadata_len().unwrap(), 1);
-
-        // Verify originals were renamed to .bak
-        assert!(!queue_file.exists());
-        assert!(!metadata_file.exists());
-        assert!(tmp.join("queue.json.bak").exists());
-        assert!(tmp.join("metadata.json.bak").exists());
-
-        // Verify ordering preserved
-        let ids: Vec<String> = db
-            .list_videos()
-            .unwrap()
-            .into_iter()
-            .map(|v| v.id)
-            .collect();
-        assert_eq!(ids, vec!["aaaaaaaaaa1", "bbbbbbbbbb2"]);
-
-        // A stale backup must never be overwritten by a later migration.
-        drop(db);
-        fs::copy(tmp.join("queue.json.bak"), &queue_file).unwrap();
-        fs::remove_file(&paths.db_file).unwrap();
-        let error = Db::open(&paths).err().expect("migration should fail");
-        assert!(error.to_string().contains("backup"));
-        assert!(queue_file.exists());
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&tmp);
     }
 }

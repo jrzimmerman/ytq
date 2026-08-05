@@ -14,13 +14,8 @@ use etcetera::app_strategy::Xdg as Strategy;
 
 pub struct AppPaths {
     pub config_file: PathBuf,
-    /// Path to the legacy `queue.json`. Kept on AppPaths so the one-time
-    /// SQLite migration can locate it. New writes go through `db_file`.
-    pub queue_file: PathBuf,
     pub history_dir: PathBuf,
     pub db_file: PathBuf,
-    /// Path to the legacy `metadata.json`. Same rationale as `queue_file`.
-    pub metadata_file: PathBuf,
     pub categories_file: PathBuf,
 }
 
@@ -52,9 +47,7 @@ impl AppPaths {
         // Return the specific file paths we need
         Ok(Self {
             config_file: config_dir.join("config.json"),
-            queue_file: data_dir.join("queue.json"),
             db_file: data_dir.join("ytq.db"),
-            metadata_file: data_dir.join("metadata.json"),
             categories_file: data_dir.join("categories.json"),
             history_dir,
         })

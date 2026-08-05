@@ -11,7 +11,7 @@ use colored::Colorize;
 
 pub fn add(input: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     // Normalize input before opening the queue
     let id = youtube::extract_video_id(input)?;
@@ -55,7 +55,7 @@ pub fn add(input: &str) -> Result<()> {
 pub fn next(target: Option<&str>) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     // If a specific target is provided, parse it first
     let target_id = target.map(youtube::extract_video_id).transpose()?;
@@ -114,7 +114,7 @@ fn open_and_record_watch(db: &Db, paths: &paths::AppPaths, removed: RemovedVideo
 
 pub fn remove(target: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     // Preserve the legacy friendly-exit behavior when the queue is empty so
     // scripts that call `ytq remove` idempotently don't start failing.
@@ -151,7 +151,7 @@ pub fn remove(target: &str) -> Result<()> {
 pub fn list() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     let metadata = if !cfg.offline {
         db.load_all_metadata()?
@@ -291,7 +291,7 @@ fn truncate(s: &str, max: usize) -> String {
 pub fn peek(n: usize) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     let metadata = if !cfg.offline {
         db.load_all_metadata()?
@@ -326,7 +326,7 @@ pub fn stats(
     to: Option<String>,
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     // Resolve date range from flags
     let range = resolve_date_range(all, week, month, year, from, to)?;
@@ -479,8 +479,7 @@ pub fn config(key: &str, value: &str) -> Result<()> {
 
 pub fn info() -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    // Opening the db will run the one-time migration on first run.
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     println!("{}", "Data Paths".bold());
     println!("---------------");
@@ -505,7 +504,7 @@ pub fn fetch(
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     // Check offline mode
     if cfg.offline {
@@ -693,7 +692,7 @@ fn collect_ids_for_scope(
 
 pub fn random() -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let db = Db::open(&paths)?;
+    let db = Db::open(&paths.db_file)?;
 
     let video = db.take_random()?;
 
