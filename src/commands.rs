@@ -3,19 +3,20 @@ use std::collections::HashMap;
 use crate::db::{Db, RemovedVideo};
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
 use crate::stats::DateRange;
-use crate::{paths, stats, store, youtube, youtube_api};
+use crate::{outln, paths, stats, store, youtube, youtube_api};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
 
 pub fn add(input: &str) -> Result<()> {
-    let paths = paths::AppPaths::init()?;
-    let db = Db::open(&paths.db_file)?;
-
-    // Normalize input before opening the queue
+    // Normalize input before opening the queue, so bad input fails without
+    // creating database state.
     let id = youtube::extract_video_id(input)?;
     let url = youtube::build_canonical_url(&id);
+
+    let paths = paths::AppPaths::init()?;
+    let db = Db::open(&paths.db_file)?;
 
     let video = Video {
         id: id.clone(),
@@ -38,15 +39,15 @@ pub fn add(input: &str) -> Result<()> {
             return Err(error);
         }
 
-        println!("{} {id}", "Added:".green());
+        outln!("{} {id}", "Added:".green());
 
         // Hint about fetching metadata when online features are enabled
         let cfg = store::load_config(&paths.config_file)?;
         if !cfg.offline {
-            println!("  Run {} to get video metadata.", "`ytq fetch`".bold());
+            outln!("  Run {} to get video metadata.", "`ytq fetch`".bold());
         }
     } else {
-        println!("{} {input}", "Video already in queue:".yellow());
+        outln!("{} {input}", "Video already in queue:".yellow());
     }
 
     Ok(())
@@ -75,7 +76,7 @@ pub fn next(target: Option<&str>) -> Result<()> {
     };
 
     let Some(removed) = video else {
-        println!("{}", "Queue is empty.".yellow());
+        outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     };
 
@@ -96,7 +97,7 @@ fn open_and_record_watch(db: &Db, paths: &paths::AppPaths, removed: RemovedVideo
         time_in_queue_sec: Some(sec_in_queue),
     };
 
-    println!("{} {}", "Opening:".blue(), video.url);
+    outln!("{} {}", "Opening:".blue(), video.url);
     if let Err(error) = open::that(&video.url) {
         db.restore_video(&removed)
             .context("failed to restore video after browser launch failed")?;
@@ -119,7 +120,7 @@ pub fn remove(target: &str) -> Result<()> {
     // Preserve the legacy friendly-exit behavior when the queue is empty so
     // scripts that call `ytq remove` idempotently don't start failing.
     if db.queue_len()? == 0 {
-        println!("{}", "Queue is empty.".yellow());
+        outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
@@ -144,7 +145,7 @@ pub fn remove(target: &str) -> Result<()> {
         return Err(error);
     }
 
-    println!("{} {}", "Removed:".red(), video.id);
+    outln!("{} {}", "Removed:".red(), video.id);
     Ok(())
 }
 
@@ -161,11 +162,11 @@ pub fn list() -> Result<()> {
 
     let queue = db.list_videos()?;
     if queue.is_empty() {
-        println!("{}", "Queue is empty.".yellow());
+        outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
-    println!("{} videos in queue:", queue.len());
+    outln!("{} videos in queue:", queue.len());
 
     if cfg.offline {
         print_list_offline(&queue);
@@ -177,10 +178,10 @@ pub fn list() -> Result<()> {
 
 fn print_list_offline(queue: &[Video]) {
     // Header
-    println!("  {:<4} {:<13} Added", "#", "ID");
+    outln!("  {:<4} {:<13} Added", "#", "ID");
     for (i, v) in queue.iter().enumerate() {
         let local_time: DateTime<Local> = DateTime::from(v.added_at);
-        println!(
+        outln!(
             "  {:<4} {:<13} {}",
             i + 1,
             v.id,
@@ -215,7 +216,7 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
         .min(25); // cap at 25 chars
 
     // Header
-    println!(
+    outln!(
         "  {:<4} {:<13} {:<title_w$}  {:<chan_w$}  {:<8}  Added",
         "#",
         "ID",
@@ -232,7 +233,7 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
 
         match metadata.get(&v.id) {
             Some(meta) if meta.unavailable => {
-                println!(
+                outln!(
                     "  {:<4} {:<13} {:<title_w$}  {:<chan_w$}  {:<8}  {}",
                     i + 1,
                     v.id,
@@ -249,7 +250,7 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
                 let channel = truncate(&meta.channel, channel_width);
                 let duration = youtube_api::format_duration(meta.duration_seconds);
 
-                println!(
+                outln!(
                     "  {:<4} {:<13} {:<title_w$}  {:<chan_w$}  {:<8}  {}",
                     i + 1,
                     v.id,
@@ -262,7 +263,7 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
                 );
             }
             None => {
-                println!(
+                outln!(
                     "  {:<4} {:<13} {:<title_w$}  {:<chan_w$}  {:<8}  {}",
                     i + 1,
                     v.id,
@@ -301,12 +302,12 @@ pub fn peek(n: usize) -> Result<()> {
 
     let slice = db.peek_videos(n, &cfg.mode)?;
     if slice.is_empty() {
-        println!("{}", "Queue is empty.".yellow());
+        outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
 
     let actual = slice.len();
-    println!("Next {actual} video(s) ({:?} mode):", cfg.mode);
+    outln!("Next {actual} video(s) ({:?} mode):", cfg.mode);
 
     if cfg.offline {
         print_list_offline(&slice);
@@ -473,7 +474,7 @@ pub fn config(key: &str, value: &str) -> Result<()> {
     }
 
     store::save_config(&paths.config_file, &cfg)?;
-    println!("{}", "Config updated.".green());
+    outln!("{}", "Config updated.".green());
     Ok(())
 }
 
@@ -481,14 +482,14 @@ pub fn info() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths.db_file)?;
 
-    println!("{}", "Data Paths".bold());
-    println!("---------------");
-    println!("Config:     {}", paths.config_file.display());
-    println!("Database:   {}", paths.db_file.display());
-    println!("Categories: {}", paths.categories_file.display());
-    println!("History:    {}", paths.history_dir.display());
-    println!("Queue Rows:    {}", db.queue_len()?);
-    println!("Metadata Rows: {}", db.metadata_len()?);
+    outln!("{}", "Data Paths".bold());
+    outln!("---------------");
+    outln!("Config:     {}", paths.config_file.display());
+    outln!("Database:   {}", paths.db_file.display());
+    outln!("Categories: {}", paths.categories_file.display());
+    outln!("History:    {}", paths.history_dir.display());
+    outln!("Queue Rows:    {}", db.queue_len()?);
+    outln!("Metadata Rows: {}", db.metadata_len()?);
 
     Ok(())
 }
@@ -579,14 +580,34 @@ pub fn fetch(
     }
 
     if ids_to_fetch.is_empty() {
-        println!("{}", "All metadata is up to date.".green());
+        outln!("{}", "All metadata is up to date.".green());
         return Ok(());
     }
 
-    println!("Fetching metadata for {} video(s)...", ids_to_fetch.len());
+    outln!("Fetching metadata for {} video(s)...", ids_to_fetch.len());
 
-    let fetched = youtube_api::fetch_video_metadata(&ids_to_fetch, &api_key)?;
+    // Persist each API batch as it arrives. A large backlog takes hundreds of
+    // requests, so a failure partway through must keep the work already done.
+    let mut fetched: Vec<VideoMeta> = Vec::new();
+    let fetch_result =
+        youtube_api::fetch_video_metadata(&ids_to_fetch, &api_key, |chunk: Vec<VideoMeta>| {
+            db.upsert_metadata_batch(&chunk)?;
+            fetched.extend(chunk);
+            Ok(())
+        });
+
     let count = fetched.len();
+
+    if let Err(error) = fetch_result {
+        // Don't tombstone: IDs we never reached are not known-missing.
+        if count > 0 {
+            outln!(
+                "{} Saved metadata for {count} video(s) before the failure.",
+                "Note:".yellow()
+            );
+        }
+        return Err(error);
+    }
 
     // Identify which IDs were not returned by the API
     let fetched_ids: std::collections::HashSet<&str> =
@@ -604,7 +625,8 @@ pub fn fetch(
     //     never destroy known-good metadata.
     //   - Otherwise (no existing row, or existing row is itself a tombstone),
     //     write/refresh a tombstone so we don't keep retrying on every run.
-    let mut upsert_batch: Vec<VideoMeta> = fetched;
+    // Fetched rows are already persisted above; only tombstones remain.
+    let mut upsert_batch: Vec<VideoMeta> = Vec::new();
     let now = Utc::now();
     let mut preserved_ids: Vec<&str> = Vec::new();
     let mut newly_tombstoned_ids: Vec<&str> = Vec::new();
@@ -632,29 +654,31 @@ pub fn fetch(
         }
     }
 
-    db.upsert_metadata_batch(&upsert_batch)?;
+    if !upsert_batch.is_empty() {
+        db.upsert_metadata_batch(&upsert_batch)?;
+    }
 
-    println!("{} Fetched metadata for {count} video(s).", "Done.".green());
+    outln!("{} Fetched metadata for {count} video(s).", "Done.".green());
 
     if !newly_tombstoned_ids.is_empty() {
-        println!(
+        outln!(
             "{} {} video(s) returned no metadata (may be private, age-restricted, or deleted):",
             "Note:".yellow(),
             newly_tombstoned_ids.len()
         );
         for id in &newly_tombstoned_ids {
-            println!("  - {id}");
+            outln!("  - {id}");
         }
     }
 
     if !preserved_ids.is_empty() {
-        println!(
+        outln!(
             "{} {} video(s) returned no metadata this time; keeping existing metadata:",
             "Note:".yellow(),
             preserved_ids.len()
         );
         for id in &preserved_ids {
-            println!("  - {id}");
+            outln!("  - {id}");
         }
     }
 
@@ -697,7 +721,7 @@ pub fn random() -> Result<()> {
     let video = db.take_random()?;
 
     let Some(removed) = video else {
-        println!("{}", "Queue is empty.".yellow());
+        outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     };
 

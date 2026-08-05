@@ -42,3 +42,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Pinned to the `rust-version` in Cargo.toml. Bump both together.
+      # dtolnay/rust-toolchain exports RUSTUP_TOOLCHAIN, which takes precedence
+      # over the `stable` channel in rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test on the declared MSRV
+        run: cargo test --locked --all-targets --all-features
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

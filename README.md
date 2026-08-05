@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-You need the **latest stable Rust** installed (currently Rust 1.97+). The repository's `rust-toolchain.toml` tracks the stable channel. If you don't have Rust, get it from [rustup.rs](https://rustup.rs/); existing rustup users can update with `rustup update stable`.
+You need **Rust 1.95 or newer**. Development tracks the stable channel via `rust-toolchain.toml`, but 1.95 is the tested minimum and CI verifies it on every change. If you don't have Rust, get it from [rustup.rs](https://rustup.rs/); existing rustup users can update with `rustup update stable`.
 
 ### Install from Source
 
@@ -217,6 +217,24 @@ ytq uses platform-specific paths for data storage. Run `ytq info` to see where y
 | `history/*.jsonl` | Event history logs (partitioned by month) |
 
 Queue and metadata are read exclusively from `ytq.db`.
+
+`config.json` can hold your API key, so it is created with owner-only permissions (`0600`) on Unix. Both `config.json` and `categories.json` are written atomically — a crash mid-write leaves the previous file intact rather than truncating it.
+
+### Overriding the storage locations
+
+Two environment variables override the platform defaults. They are useful for sandboxing, for keeping separate queues, and for testing against throwaway data:
+
+| Variable | Overrides |
+|----------|-----------|
+| `YTQ_CONFIG_DIR` | Directory holding `config.json` |
+| `YTQ_DATA_DIR` | Directory holding `ytq.db`, `categories.json`, and `history/` |
+
+```bash
+# Run against a scratch queue without touching your real one
+YTQ_DATA_DIR=/tmp/ytq-scratch YTQ_CONFIG_DIR=/tmp/ytq-scratch ytq list
+```
+
+Unset or empty values fall back to the platform defaults. Run `ytq info` to confirm which paths are in effect.
 
 ## Development
 

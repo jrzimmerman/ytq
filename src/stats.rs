@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::models::{Action, Event, VideoMeta};
-use crate::youtube_api;
+use crate::{outln, youtube_api};
 
 #[cfg(not(test))]
 use chrono::Local;
@@ -1163,61 +1163,61 @@ fn compute_watches_per_week(events: &[&Event], range: &DateRange) -> Option<f64>
 // ---------------------------------------------------------------------------
 
 pub fn print_basic(stats: &BasicStats, range: &DateRange, has_metadata_available: bool) {
-    println!("{}", "YTQ Stats".bold());
-    println!("------------------------------");
+    outln!("{}", "YTQ Stats".bold());
+    outln!("------------------------------");
 
-    if range.start.is_some() || range.end.is_some() {
-        println!("Period: {}", range.label());
-        println!();
-    }
+    // Always state the window. `--all` has no bounds, but leaving the line off
+    // entirely makes the numbers ambiguous.
+    outln!("Period: {}", range.label());
+    outln!();
 
-    println!("Videos Added:    {}", stats.added);
-    println!("Videos Watched:  {}", stats.watched);
-    println!("Videos Skipped:  {}", stats.skipped);
-    println!("Completion Rate: {}", format_percent(stats.completion_rate));
-    println!("Queue Depth:     {}", stats.queue_depth);
+    outln!("Videos Added:    {}", stats.added);
+    outln!("Videos Watched:  {}", stats.watched);
+    outln!("Videos Skipped:  {}", stats.skipped);
+    outln!("Completion Rate: {}", format_percent(stats.completion_rate));
+    outln!("Queue Depth:     {}", stats.queue_depth);
 
-    println!();
+    outln!();
 
     if let Some(avg) = stats.avg_time_in_queue_secs {
-        println!("Avg Time in Queue: {}", format_duration_human(avg as i64));
+        outln!("Avg Time in Queue: {}", format_duration_human(avg as i64));
     }
 
     if let Some(secs) = stats.total_watch_time_secs {
-        println!("Total Watch Time:  {}", format_duration_long(secs));
+        outln!("Total Watch Time:  {}", format_duration_long(secs));
     }
 
     if let Some((day, count)) = &stats.most_active_weekday {
-        println!("Most Active Day:   {day} ({count} videos added)");
+        outln!("Most Active Day:   {day} ({count} videos added)");
     }
 
     // Queue profile
     if !stats.top_queue_channels.is_empty() {
-        println!();
-        println!("{}", "Top Channels (Queue)".bold());
+        outln!();
+        outln!("{}", "Top Channels (Queue)".bold());
         for (i, (channel, count)) in stats.top_queue_channels.iter().enumerate() {
             let videos_label = if *count == 1 { "video" } else { "videos" };
-            println!("  {}. {channel}  ({count} {videos_label})", i + 1);
+            outln!("  {}. {channel}  ({count} {videos_label})", i + 1);
         }
     }
 
     if let Some(secs) = stats.queue_total_duration_secs {
-        println!("Total Queue Duration: {}", format_duration_long(secs));
+        outln!("Total Queue Duration: {}", format_duration_long(secs));
     }
 
     // Watched channels (if any watches)
     if !stats.top_watched_channels.is_empty() {
-        println!();
-        println!("{}", "Top Channels (Watched)".bold());
+        outln!();
+        outln!("{}", "Top Channels (Watched)".bold());
         for (i, (channel, count)) in stats.top_watched_channels.iter().enumerate() {
             let videos_label = if *count == 1 { "video" } else { "videos" };
-            println!("  {}. {channel}  ({count} {videos_label})", i + 1);
+            outln!("  {}. {channel}  ({count} {videos_label})", i + 1);
         }
     }
 
     if !has_metadata_available {
-        println!();
-        println!(
+        outln!();
+        outln!(
             "{}",
             "Tip: Run `ytq fetch --history` for richer stats (channels, durations, categories)."
                 .dimmed()
@@ -1230,76 +1230,74 @@ pub fn print_basic(stats: &BasicStats, range: &DateRange, has_metadata_available
 // ---------------------------------------------------------------------------
 
 pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_available: bool) {
-    println!("{}", "YTQ Wrapped".bold());
-    println!("------------------------------");
+    outln!("{}", "YTQ Wrapped".bold());
+    outln!("------------------------------");
 
-    if range.start.is_some() || range.end.is_some() {
-        println!("Period: {}", range.label());
-    }
-    println!();
+    outln!("Period: {}", range.label());
+    outln!();
 
     // --- Core counts ---
-    println!("Videos Added:    {}", stats.basic.added);
-    println!("Videos Watched:  {}", stats.basic.watched);
-    println!("Videos Skipped:  {}", stats.basic.skipped);
-    println!(
+    outln!("Videos Added:    {}", stats.basic.added);
+    outln!("Videos Watched:  {}", stats.basic.watched);
+    outln!("Videos Skipped:  {}", stats.basic.skipped);
+    outln!(
         "Completion Rate: {}",
         format_percent(stats.basic.completion_rate)
     );
-    println!("Skip Rate:       {}", format_percent(stats.skip_rate));
-    println!("Queue Depth:     {}", stats.basic.queue_depth);
+    outln!("Skip Rate:       {}", format_percent(stats.skip_rate));
+    outln!("Queue Depth:     {}", stats.basic.queue_depth);
 
-    println!();
+    outln!();
 
     // --- Queue behavior ---
     if let Some(avg) = stats.basic.avg_time_in_queue_secs {
-        println!(
+        outln!(
             "Avg Time in Queue:     {}",
             format_duration_human(avg as i64)
         );
     }
     if let Some(secs) = stats.fastest_watch_secs {
-        println!("Fastest Time to Watch: {}", format_duration_human(secs));
+        outln!("Fastest Time to Watch: {}", format_duration_human(secs));
     }
     if let Some(secs) = stats.slowest_watch_secs {
-        println!("Slowest Time to Watch: {}", format_duration_human(secs));
+        outln!("Slowest Time to Watch: {}", format_duration_human(secs));
     }
     if let Some(wpw) = stats.watches_per_week {
-        println!("Watches per Week:      {:.1}", wpw);
+        outln!("Watches per Week:      {:.1}", wpw);
     }
 
     // --- Watch time ---
     if let Some(secs) = stats.basic.total_watch_time_secs {
-        println!("Total Watch Time:      {}", format_duration_long(secs));
+        outln!("Total Watch Time:      {}", format_duration_long(secs));
     }
     if let Some(avg) = stats.watched_avg_duration_secs {
-        println!(
+        outln!(
             "Avg Video Duration:    {}",
             youtube_api::format_duration(avg)
         );
     }
 
     // --- Streaks and busy days ---
-    println!();
+    outln!();
     if stats.longest_streak > 0 {
         let days_label = if stats.longest_streak == 1 {
             "day"
         } else {
             "days"
         };
-        println!(
+        outln!(
             "Longest Watch Streak:  {} {days_label}",
             stats.longest_streak
         );
     }
     if let Some((day, count)) = &stats.busiest_day {
-        println!(
+        outln!(
             "Busiest Day:           {} ({count} videos)",
             day.format("%Y-%m-%d")
         );
     }
     if let Some((day, count)) = &stats.basic.most_active_weekday {
-        println!("Most Active Weekday:   {day} ({count} videos added)");
+        outln!("Most Active Weekday:   {day} ({count} videos added)");
     }
 
     // --- Fun Wrapped Insights (Your Year in Review) ---
@@ -1315,20 +1313,20 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         || !stats.category_evolution.is_empty();
 
     if has_insights {
-        println!();
-        println!("{}", "--- Your Year in Review ---".bold());
-        println!();
+        outln!();
+        outln!("{}", "--- Your Year in Review ---".bold());
+        outln!();
 
         if let Some((label, description)) = stats.viewer_personality {
-            println!("Viewer Personality:    {}", label.cyan().bold());
-            println!(
+            outln!("Viewer Personality:    {}", label.cyan().bold());
+            outln!(
                 "                       {}",
                 format!("\"{description}\"").dimmed()
             );
         }
 
         if let Some((ref channel, ratio)) = stats.channel_loyalty {
-            println!(
+            outln!(
                 "Channel Loyalty:       {:.0}% of your watches were from {}",
                 ratio * 100.0,
                 channel.bold()
@@ -1336,11 +1334,11 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         }
 
         if let Some(year) = stats.watching_age {
-            println!("Watching Age:          You watched like it was {}", year);
+            outln!("Watching Age:          You watched like it was {}", year);
         }
 
         if let Some((label, median)) = stats.queue_patience {
-            println!(
+            outln!(
                 "Queue Patience:        {} (median: {} in queue)",
                 label,
                 format_duration_human(median)
@@ -1348,7 +1346,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         }
 
         if let Some((label, ratio)) = stats.weekend_vs_weekday {
-            println!(
+            outln!(
                 "Watch Style:           {} ({:.0}% on weekends)",
                 label,
                 ratio * 100.0
@@ -1357,7 +1355,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
 
         if let Some((day, count)) = &stats.discovery_day {
             let channels_label = if *count == 1 { "channel" } else { "channels" };
-            println!(
+            outln!(
                 "Discovery Day:         {} — you explored {} different {channels_label}",
                 day.format("%Y-%m-%d"),
                 count
@@ -1366,7 +1364,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
 
         if let Some((ref _id, ref title, count)) = stats.comfort_video {
             let display = if title.is_empty() { _id } else { title };
-            println!(
+            outln!(
                 "Comfort Video:         {} (watched {} times)",
                 truncate(display, 40),
                 count
@@ -1375,7 +1373,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
 
         if let Some((ref _id, ref title, ref published_at)) = stats.oldest_video {
             let display = if title.is_empty() { _id } else { title };
-            println!(
+            outln!(
                 "Oldest Video Watched:  {} (published {})",
                 truncate(display, 35),
                 published_at.format("%Y-%m-%d")
@@ -1388,39 +1386,39 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
             } else {
                 "videos"
             };
-            println!(
+            outln!(
                 "Queue Throughput:      {} {videos_label} passed through your queue",
                 stats.total_throughput
             );
         }
 
         if !stats.category_evolution.is_empty() {
-            println!();
-            println!("{}", "Category Evolution".bold());
+            outln!();
+            outln!("{}", "Category Evolution".bold());
             for phase in &stats.category_evolution {
-                println!("  {}: {}", phase.period_label, phase.category);
+                outln!("  {}: {}", phase.period_label, phase.category);
             }
         }
     }
 
     // --- Monthly trends ---
     if !stats.watched_by_month.is_empty() {
-        println!();
-        println!("{}", "Watched by Month".bold());
+        outln!();
+        outln!("{}", "Watched by Month".bold());
         print_bar_chart_monthly(&stats.watched_by_month);
     }
 
     if !stats.added_by_month.is_empty() {
-        println!();
-        println!("{}", "Added by Month".bold());
+        outln!();
+        outln!("{}", "Added by Month".bold());
         print_bar_chart_monthly(&stats.added_by_month);
     }
 
     // --- Time of day ---
     let total_tod: usize = stats.time_of_day.iter().map(|b| b.count).sum();
     if total_tod > 0 {
-        println!();
-        println!("{}", "Time of Day (Watched)".bold());
+        outln!();
+        outln!("{}", "Time of Day (Watched)".bold());
         let max_count = stats.time_of_day.iter().map(|b| b.count).max().unwrap_or(1);
         let label_width = stats
             .time_of_day
@@ -1430,7 +1428,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
             .unwrap_or(10);
         for bucket in &stats.time_of_day {
             let bar = make_bar(bucket.count, max_count, 20);
-            println!(
+            outln!(
                 "  {:<width$}  {} {}",
                 bucket.label,
                 bar,
@@ -1446,36 +1444,36 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         || !stats.queue_top_tags.is_empty();
 
     if has_queue_profile {
-        println!();
-        println!("{}", "--- Queue Profile ---".bold());
+        outln!();
+        outln!("{}", "--- Queue Profile ---".bold());
 
         if let Some(secs) = stats.basic.queue_total_duration_secs {
-            println!("Total Queue Duration:  {}", format_duration_long(secs));
+            outln!("Total Queue Duration:  {}", format_duration_long(secs));
         }
         if let Some(avg) = stats.queue_avg_duration_secs {
-            println!(
+            outln!(
                 "Avg Video Duration:    {}",
                 youtube_api::format_duration(avg)
             );
         }
 
         if !stats.queue_top_channels.is_empty() {
-            println!();
-            println!("{}", "Top Channels".bold());
+            outln!();
+            outln!("{}", "Top Channels".bold());
             print_leaderboard(&stats.queue_top_channels);
         }
 
         if !stats.queue_categories.is_empty() {
-            println!();
-            println!("{}", "Categories".bold());
+            outln!();
+            outln!("{}", "Categories".bold());
             print_bar_chart_named(&stats.queue_categories);
         }
 
         if !stats.queue_top_tags.is_empty() {
-            println!();
-            println!("{}", "Top Tags".bold());
+            outln!();
+            outln!("{}", "Top Tags".bold());
             for (i, (tag, count)) in stats.queue_top_tags.iter().enumerate() {
-                println!("  {:>2}. {tag}  ({count})", i + 1);
+                outln!("  {:>2}. {tag}  ({count})", i + 1);
             }
         }
     }
@@ -1486,35 +1484,35 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         || !stats.watched_top_tags.is_empty();
 
     if has_watch_profile {
-        println!();
-        println!("{}", "--- Watch History ---".bold());
+        outln!();
+        outln!("{}", "--- Watch History ---".bold());
 
         if !stats.watched_top_channels.is_empty() {
-            println!();
-            println!("{}", "Top Channels".bold());
+            outln!();
+            outln!("{}", "Top Channels".bold());
             print_leaderboard(&stats.watched_top_channels);
         }
 
         if !stats.watched_categories.is_empty() {
-            println!();
-            println!("{}", "Categories".bold());
+            outln!();
+            outln!("{}", "Categories".bold());
             print_bar_chart_named(&stats.watched_categories);
         }
 
         if !stats.watched_top_tags.is_empty() {
-            println!();
-            println!("{}", "Top Tags".bold());
+            outln!();
+            outln!("{}", "Top Tags".bold());
             for (i, (tag, count)) in stats.watched_top_tags.iter().enumerate() {
-                println!("  {:>2}. {tag}  ({count})", i + 1);
+                outln!("  {:>2}. {tag}  ({count})", i + 1);
             }
         }
 
         // Longest / shortest video
         if stats.longest_video.is_some() || stats.shortest_video.is_some() {
-            println!();
+            outln!();
             if let Some((id, title, secs)) = &stats.longest_video {
                 let display = if title.is_empty() { id } else { title };
-                println!(
+                outln!(
                     "Longest Video:  {} ({})",
                     truncate(display, 40),
                     youtube_api::format_duration(*secs)
@@ -1522,7 +1520,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
             }
             if let Some((id, title, secs)) = &stats.shortest_video {
                 let display = if title.is_empty() { id } else { title };
-                println!(
+                outln!(
                     "Shortest Video: {} ({})",
                     truncate(display, 40),
                     youtube_api::format_duration(*secs)
@@ -1532,8 +1530,8 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
     }
 
     if !has_metadata_available {
-        println!();
-        println!(
+        outln!();
+        outln!(
             "{}",
             "Tip: Run `ytq fetch --history` for richer stats (channels, durations, categories)."
                 .dimmed()
@@ -1601,7 +1599,7 @@ fn print_bar_chart_monthly(buckets: &[MonthBucket]) {
     let label_width = buckets.iter().map(|b| b.label.len()).max().unwrap_or(7);
     for bucket in buckets {
         let bar = make_bar(bucket.count, max_count, 20);
-        println!(
+        outln!(
             "  {:<width$}  {} {}",
             bucket.label,
             bar,
@@ -1625,7 +1623,7 @@ fn print_leaderboard(items: &[(String, usize)]) {
     for (i, (name, count)) in items.iter().enumerate() {
         let bar = make_bar(*count, max_count, 20);
         let display_name = truncate(name, name_width);
-        println!(
+        outln!(
             "  {:>2}. {:<width$}  {} {}",
             i + 1,
             display_name,
@@ -1650,7 +1648,7 @@ fn print_bar_chart_named(items: &[(String, usize)]) {
     for (name, count) in items {
         let bar = make_bar(*count, max_count, 20);
         let display_name = truncate(name, name_width);
-        println!(
+        outln!(
             "  {:<width$}  {} {}",
             display_name,
             bar,

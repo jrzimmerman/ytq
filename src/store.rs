@@ -22,8 +22,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 pub fn save_config(path: &Path, config: &Config) -> Result<()> {
     let data = serde_json::to_string_pretty(config).context("failed to serialize configuration")?;
-    fs::write(path, data).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    // The config file can hold a YouTube Data API key, so keep it owner-only.
+    write_atomic(path, &data, true)
 }
 
 pub fn log_event(history_dir: &Path, event: &Event) -> Result<()> {
@@ -116,7 +116,60 @@ pub fn load_categories(path: &Path) -> Result<HashMap<String, String>> {
 pub fn save_categories(path: &Path, categories: &HashMap<String, String>) -> Result<()> {
     let data =
         serde_json::to_string_pretty(categories).context("failed to serialize categories")?;
-    fs::write(path, data).with_context(|| format!("failed to write {}", path.display()))?;
+    write_atomic(path, &data, false)
+}
+
+/// Writes `data` to `path` via a temporary file in the same directory, then
+/// renames it into place. A crash mid-write leaves the previous file intact
+/// instead of truncating it, which matters because `config.json` holds the
+/// user's API key.
+///
+/// When `private` is set, the file is restricted to the owner on Unix.
+fn write_atomic(path: &Path, data: &str, private: bool) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{} has no file name", path.display()))?;
+    let mut temp_name = file_name.to_os_string();
+    temp_name.push(format!(".tmp.{}", std::process::id()));
+    let temp_path = parent.join(temp_name);
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+
+    let write_result = (|| -> Result<()> {
+        let mut file = options
+            .open(&temp_path)
+            .with_context(|| format!("failed to create {}", temp_path.display()))?;
+        file.write_all(data.as_bytes())
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        // Flush to disk before the rename so a power loss cannot leave an
+        // empty file renamed over good data.
+        file.sync_all()
+            .with_context(|| format!("failed to flush {}", temp_path.display()))?;
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    }
+
     Ok(())
 }
 

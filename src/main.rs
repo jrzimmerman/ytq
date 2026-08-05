@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod models;
+mod output;
 mod paths;
 mod stats;
 mod store;
@@ -14,7 +15,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 #[derive(Parser)]
-#[command(name = "ytq", version)]
+#[command(name = "ytq", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

@@ -1,4 +1,4 @@
-# AGENTS.md - ytq
+# ytq
 
 Guidance for coding agents working in this repository.
 
@@ -6,7 +6,11 @@ Guidance for coding agents working in this repository.
 
 - `ytq` is a Rust CLI for managing a personal YouTube queue.
 - Rust edition: `2024`
-- Minimum supported Rust version (MSRV): latest stable Rust, currently `1.97+`
+- Minimum supported Rust version (MSRV): `1.95`, declared as `rust-version` in `Cargo.toml`
+  and verified by the `msrv` CI job. It is the real floor, not the latest release: `1.94`
+  fails because `libsqlite3-sys` (pulled in by `rusqlite`'s `bundled` feature) uses
+  `cfg_select!`. Raise it only when something actually requires it, and update the
+  pinned toolchain in `.github/workflows/ci.yml` in the same change.
 - Main crates in use: `clap`, `anyhow`, `serde`, `serde_json`, `chrono`, `colored`, `regex`, `url`, `ureq`, `etcetera`, `rusqlite` (bundled, with chrono support), `open`
 - The app is offline-first. Network access is only used for explicit metadata/category fetch operations.
 
@@ -19,9 +23,11 @@ src/models.rs      Core data types and serde models
 src/db.rs          SQLite-backed queue and metadata storage
 src/store.rs       Config, categories, and history (JSONL) persistence
 src/stats.rs       Stats computation and rendering
+src/output.rs      Stdout writer that tolerates a closed pipe
 src/paths.rs       Platform-specific path resolution
 src/youtube.rs     YouTube URL and ID parsing
 src/youtube_api.rs YouTube Data API client and duration parsing
+tests/cli.rs       End-to-end tests that run the built binary
 ```
 
 ## Build, Lint, and Test Commands
@@ -85,8 +91,13 @@ cargo test --locked --all-targets --all-features
 
 ## Testing Notes
 
-- Tests live in `#[cfg(test)] mod tests` blocks at the bottom of each file.
-- This project is a binary crate, so test names are typically namespaced like `youtube::tests::valid_video_id_direct`.
+- Unit tests live in `#[cfg(test)] mod tests` blocks at the bottom of each file.
+- End-to-end tests live in `tests/cli.rs` and run the real binary via `CARGO_BIN_EXE_ytq`.
+  Everything in `commands.rs` resolves its own paths and prints its own output, so that
+  is the only place it can be covered — add coverage there when changing command behavior.
+- `tests/cli.rs` uses `TestEnv`, which points `YTQ_CONFIG_DIR`/`YTQ_DATA_DIR` at a private
+  temp directory and removes it on drop. Never write a test that uses the default paths.
+- This project is a binary crate, so unit test names are namespaced like `youtube::tests::valid_video_id_direct`.
 - `cargo test <substring>` is the normal way to run one test or a small group.
 - Prefer descriptive test names that state behavior, not implementation details.
 - Cover both success and failure paths when editing parsing, stats, or persistence logic.
@@ -149,6 +160,9 @@ Let `cargo fmt` handle intra-group ordering.
 - Use `anyhow!(...)` or `ok_or_else(...)` for inline error creation.
 - Add context with `.context(...)` or `.with_context(...)` around I/O and parsing that can fail opaquely.
 - Favor propagating errors with `?`.
+- Start messages lowercase and without trailing punctuation. They are rendered as
+  `error: {message}` and chained with `{:#}`, so a capitalized message reads wrong
+  mid-chain. The exception is a leading proper noun, as in "YouTube API returned HTTP 500".
 
 Example:
 
@@ -174,6 +188,14 @@ fn load(path: &Path) -> Result<String> {
 - Aliases and visible aliases are common; preserve existing command ergonomics.
 - `main()` prints colored errors and exits non-zero; command logic lives in `run()` and `src/commands.rs`.
 
+### Printing
+
+- Use `outln!` (from `src/output.rs`), never `println!`, for anything written to stdout.
+  `println!` panics with "failed printing to stdout" when the reader closes the pipe,
+  which happens for something as ordinary as `ytq list | head`. `outln!` exits quietly instead.
+- Keep stdout for data the user asked for and `eprintln!` for warnings and progress,
+  so `ytq list > file` stays clean and pipelines keep working.
+
 ### Persistence
 
 - Queue and metadata mutations go through the `Db` struct in `src/db.rs`.
@@ -181,6 +203,10 @@ fn load(path: &Path) -> Result<String> {
 - Concurrency is handled by SQLite WAL mode (no file locking layer).
 - Config and categories are still JSON; history is append-only monthly JSONL.
 - Persistence helpers (for non-DB files) return defaults instead of failing on missing files.
+- JSON files are written through `store::write_atomic` (temp file + rename), never `fs::write`.
+  `config.json` is written owner-only because it can hold an API key.
+- `YTQ_CONFIG_DIR` and `YTQ_DATA_DIR` override the platform paths. Keep them working —
+  the end-to-end tests depend on them to avoid touching the developer's real queue.
 
 ### Parsing and Validation
 

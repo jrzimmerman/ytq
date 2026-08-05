@@ -67,10 +67,16 @@ pub fn format_duration(seconds: u64) -> String {
 
 /// Fetches metadata for a batch of video IDs from the YouTube Data API v3.
 /// IDs are automatically chunked into batches of 50 (API limit).
-/// Returns metadata for all videos that were successfully resolved.
 /// Videos that are deleted/private/unavailable are silently skipped.
-pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMeta>> {
-    let mut all_metadata = Vec::new();
+///
+/// `on_chunk` is invoked with the metadata resolved from each request as soon
+/// as that request completes, so callers can persist incrementally. A large
+/// backlog takes hundreds of requests, and a failure partway through should not
+/// throw away everything already downloaded.
+pub fn fetch_video_metadata<F>(ids: &[String], api_key: &str, mut on_chunk: F) -> Result<()>
+where
+    F: FnMut(Vec<VideoMeta>) -> Result<()>,
+{
     let total = ids.len();
 
     for (chunk_idx, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
@@ -115,6 +121,7 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
             .context("unexpected API response: missing 'items' array")?;
 
         let now = Utc::now();
+        let mut chunk_metadata = Vec::with_capacity(items.len());
 
         for item in items {
             let id = item["id"].as_str().unwrap_or_default().to_string();
@@ -171,7 +178,7 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
                 .to_string();
             let duration_seconds = parse_iso8601_duration(&duration).unwrap_or(0);
 
-            all_metadata.push(VideoMeta {
+            chunk_metadata.push(VideoMeta {
                 id,
                 title,
                 channel,
@@ -185,9 +192,11 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
                 unavailable: false,
             });
         }
+
+        on_chunk(chunk_metadata)?;
     }
 
-    Ok(all_metadata)
+    Ok(())
 }
 
 /// Fetches YouTube video categories for the US region.
