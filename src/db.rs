@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::models::{Mode, Video, VideoMeta};
 use crate::paths::AppPaths;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -13,6 +14,7 @@ const SCHEMA_SQL: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
 
 CREATE TABLE IF NOT EXISTS queue (
     id          TEXT PRIMARY KEY,
@@ -28,12 +30,12 @@ CREATE TABLE IF NOT EXISTS metadata (
     channel           TEXT NOT NULL,
     channel_id        TEXT NOT NULL,
     duration          TEXT NOT NULL,
-    duration_seconds  INTEGER NOT NULL,
+    duration_seconds  INTEGER NOT NULL CHECK (duration_seconds >= 0),
     published_at      TEXT NOT NULL,
     category_id       TEXT NOT NULL,
     tags              TEXT NOT NULL DEFAULT '[]',
     fetched_at        TEXT NOT NULL,
-    unavailable       INTEGER NOT NULL DEFAULT 0,
+    unavailable       INTEGER NOT NULL DEFAULT 0 CHECK (unavailable IN (0, 1)),
     CHECK (json_valid(tags))
 );
 CREATE INDEX IF NOT EXISTS idx_metadata_channel ON metadata(channel);
@@ -58,6 +60,8 @@ impl Db {
     pub fn open(paths: &AppPaths) -> Result<Self> {
         let conn = Connection::open(&paths.db_file)
             .with_context(|| format!("failed to open database: {}", paths.db_file.display()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .context("failed to configure database busy timeout")?;
         let db = Self { conn };
         db.init_schema()?;
         db.migrate_from_json(paths)?;
@@ -101,6 +105,23 @@ impl Db {
             return Ok(());
         }
 
+        let queue_backup = paths.queue_file.with_extension("json.bak");
+        let metadata_backup = paths.metadata_file.with_extension("json.bak");
+        if queue_file_exists && queue_backup.exists() {
+            bail!(
+                "cannot migrate {} because backup {} already exists",
+                paths.queue_file.display(),
+                queue_backup.display()
+            );
+        }
+        if meta_file_exists && metadata_backup.exists() {
+            bail!(
+                "cannot migrate {} because backup {} already exists",
+                paths.metadata_file.display(),
+                metadata_backup.display()
+            );
+        }
+
         let videos = if queue_file_exists {
             load_legacy_queue(&paths.queue_file)?
         } else {
@@ -122,7 +143,11 @@ impl Db {
                 "INSERT INTO queue (id, url, added_at, position) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for (idx, v) in videos.iter().enumerate() {
-                q_stmt.execute(params![v.id, v.url, v.added_at, (idx as i64) + 1])?;
+                let position = i64::try_from(idx)
+                    .context("legacy queue is too large to represent in SQLite")?
+                    .checked_add(1)
+                    .context("legacy queue position overflow")?;
+                q_stmt.execute(params![v.id, v.url, v.added_at, position])?;
             }
             let mut m_stmt = tx.prepare(
                 "INSERT INTO metadata (id, title, channel, channel_id, duration, duration_seconds, \
@@ -131,13 +156,14 @@ impl Db {
             )?;
             for m in metadata.values() {
                 let tags_json = serde_json::to_string(&m.tags)?;
+                let duration_seconds = duration_to_sql(m.duration_seconds)?;
                 m_stmt.execute(params![
                     m.id,
                     m.title,
                     m.channel,
                     m.channel_id,
                     m.duration,
-                    m.duration_seconds as i64,
+                    duration_seconds,
                     m.published_at,
                     m.category_id,
                     tags_json,
@@ -150,22 +176,20 @@ impl Db {
 
         // Rename originals to .bak after successful import.
         if queue_file_exists {
-            let bak = paths.queue_file.with_extension("json.bak");
-            fs::rename(&paths.queue_file, &bak).with_context(|| {
+            fs::rename(&paths.queue_file, &queue_backup).with_context(|| {
                 format!(
-                    "failed to rename {} to {}",
+                    "database import succeeded, but failed to rename {} to {}",
                     paths.queue_file.display(),
-                    bak.display()
+                    queue_backup.display()
                 )
             })?;
         }
         if meta_file_exists {
-            let bak = paths.metadata_file.with_extension("json.bak");
-            fs::rename(&paths.metadata_file, &bak).with_context(|| {
+            fs::rename(&paths.metadata_file, &metadata_backup).with_context(|| {
                 format!(
-                    "failed to rename {} to {}",
+                    "database import succeeded, but failed to rename {} to {}",
                     paths.metadata_file.display(),
-                    bak.display()
+                    metadata_backup.display()
                 )
             })?;
         }
@@ -338,7 +362,8 @@ impl Db {
         };
         let sql = format!("SELECT id, url, added_at FROM queue ORDER BY position {order} LIMIT ?1");
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![n as i64], |row| {
+        let limit = i64::try_from(n).context("peek count is too large")?;
+        let rows = stmt.query_map(params![limit], |row| {
             Ok(Video {
                 id: row.get(0)?,
                 url: row.get(1)?,
@@ -370,7 +395,7 @@ impl Db {
         let n: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM queue", [], |r| r.get(0))?;
-        Ok(n as usize)
+        usize::try_from(n).context("queue count is outside the supported range")
     }
 
     // ---------------------------------------------------------------
@@ -399,13 +424,14 @@ impl Db {
             )?;
             for m in items {
                 let tags_json = serde_json::to_string(&m.tags)?;
+                let duration_seconds = duration_to_sql(m.duration_seconds)?;
                 stmt.execute(params![
                     m.id,
                     m.title,
                     m.channel,
                     m.channel_id,
                     m.duration,
-                    m.duration_seconds as i64,
+                    duration_seconds,
                     m.published_at,
                     m.category_id,
                     tags_json,
@@ -438,7 +464,7 @@ impl Db {
         let n: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM metadata", [], |r| r.get(0))?;
-        Ok(n as usize)
+        usize::try_from(n).context("metadata count is outside the supported range")
     }
 }
 
@@ -446,12 +472,23 @@ impl Db {
 // Row mappers
 // ---------------------------------------------------------------
 
+fn duration_to_sql(duration_seconds: u64) -> Result<i64> {
+    i64::try_from(duration_seconds).context("video duration is too large to store")
+}
+
 fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<VideoMeta> {
     let tags_json: String = row.get(8)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let duration_seconds: i64 = row.get(5)?;
+    let duration_seconds = u64::try_from(duration_seconds).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })?;
     let unavailable: i64 = row.get(10)?;
     Ok(VideoMeta {
         id: row.get(0)?,
@@ -459,7 +496,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<VideoMeta> {
         channel: row.get(2)?,
         channel_id: row.get(3)?,
         duration: row.get(4)?,
-        duration_seconds: duration_seconds as u64,
+        duration_seconds,
         published_at: row.get::<_, DateTime<Utc>>(6)?,
         category_id: row.get(7)?,
         tags,
@@ -677,6 +714,17 @@ mod tests {
     }
 
     #[test]
+    fn upsert_metadata_rejects_duration_outside_sqlite_range() {
+        let db = Db::open_in_memory().unwrap();
+        let mut metadata = sample_meta("aaaaaaaaaa1", "X");
+        metadata.duration_seconds = u64::MAX;
+
+        let error = db.upsert_metadata_batch(&[metadata]).unwrap_err();
+        assert!(error.to_string().contains("duration is too large"));
+        assert_eq!(db.metadata_len().unwrap(), 0);
+    }
+
+    #[test]
     fn upsert_metadata_only_touches_ids_in_batch() {
         // Locks in the invariant that fetch relies on: upserting a batch that
         // does NOT contain id X must leave X's existing row untouched. The
@@ -788,6 +836,14 @@ mod tests {
             .map(|v| v.id)
             .collect();
         assert_eq!(ids, vec!["aaaaaaaaaa1", "bbbbbbbbbb2"]);
+
+        // A stale backup must never be overwritten by a later migration.
+        drop(db);
+        fs::copy(tmp.join("queue.json.bak"), &queue_file).unwrap();
+        fs::remove_file(&paths.db_file).unwrap();
+        let error = Db::open(&paths).err().expect("migration should fail");
+        assert!(error.to_string().contains("backup"));
+        assert!(queue_file.exists());
 
         // Cleanup
         let _ = fs::remove_dir_all(&tmp);

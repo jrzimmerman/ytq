@@ -30,15 +30,15 @@ Metadata is stored separately from queue and history data to keep core operation
 
 | File | Purpose | Format |
 |------|---------|--------|
-| `queue.json` | Video queue (ID, URL, added_at) | JSON array |
-| `metadata.json` | Video metadata cache (title, channel, duration, tags, etc.) | JSON object keyed by ID |
+| `ytq.db` | Video queue and metadata cache | SQLite |
 | `categories.json` | YouTube video category lookup table | JSON object (ID -> name) |
 | `history/*.jsonl` | Event history logs | Append-only JSONL |
 
 - `add`, `remove`, `next` remain instant (no network I/O)
 - `fetch` is the only command that makes network requests
 - `list` and `peek` join queue data with metadata at display time (local, fast)
-- Video categories are stored separately for future stats/wrapped analytics
+- Queue and metadata writes use indexed SQLite operations
+- Video categories are stored separately for stats/wrapped analytics
 
 ### Design Principles
 
@@ -46,7 +46,7 @@ Metadata is stored separately from queue and history data to keep core operation
 2. **`add` is always instant** — The `add` command never makes network requests. Metadata is fetched separately via `fetch`.
 3. **Graceful degradation** — If `offline: false` but no API key is configured, `fetch` shows a clear error with setup instructions.
 4. **Opt-in messaging** — Only show "run `ytq fetch` for metadata" hints when `offline: false`, so offline-first users aren't nagged.
-5. **Decoupled metadata** — Video metadata lives in `metadata.json`, not embedded in queue or history. This keeps core data structures unchanged and enables independent refresh/update cycles.
+5. **Decoupled metadata** — Video metadata lives in its own SQLite table, not embedded in queue or history. This keeps core data structures unchanged and enables independent refresh/update cycles.
 
 ### Configuration Behavior
 
@@ -67,10 +67,10 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
 
 - [x] **Phase 2: Models & Storage**
   - [x] `VideoMeta` struct: id, title, channel, channel_id, duration_seconds, published_at, category_id, tags, fetched_at
-  - [x] `metadata.json` sidecar file — JSON object keyed by video ID, read-modify-write with atomic temp-file-then-rename
+  - [x] SQLite metadata table keyed by video ID
   - [x] `categories.json` — separate lookup table for YouTube video categories
   - [x] `Video` and `Event` structs unchanged — metadata fully decoupled
-  - [x] No migration required — existing data continues to work
+  - [x] One-time migration from legacy JSON storage
 
 - [x] **Phase 3: Fetch Command**
   - [x] `ytq fetch` — fetch metadata for queue videos missing metadata
@@ -80,7 +80,7 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
   - [x] `--refresh-categories` flag to force category refresh
   - [x] Categories auto-fetched on first run, cached thereafter
   - [x] Progress indicator ("Fetching 1-50 of N...")
-  - [x] Metadata deduplication via read-modify-write (upsert into HashMap, write full file)
+  - [x] Metadata deduplication via transactional SQLite upserts
   - [ ] Respect YouTube API rate limits with exponential backoff
 
 - [x] **Phase 4: Enhanced Display**
@@ -133,7 +133,8 @@ All basic stats plus:
 
 ### Time Filtering
 
-- [x] `ytq stats` — All-time statistics (default)
+- [x] `ytq stats` — Current-year statistics (default)
+- [x] `ytq stats --all` — All-time statistics
 - [x] `ytq stats --week` — Last 7 days
 - [x] `ytq stats --month` — Last 30 days
 - [x] `ytq stats --month 2026-01` — Specific month

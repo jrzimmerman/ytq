@@ -3,19 +3,27 @@ use std::collections::HashMap;
 use crate::models::{Action, Event, VideoMeta};
 use crate::youtube_api;
 
-use chrono::{
-    DateTime, Datelike, Days, Local, NaiveDate, TimeDelta, TimeZone, Timelike, Utc, Weekday,
-};
+#[cfg(not(test))]
+use chrono::Local;
+use chrono::{DateTime, Datelike, Days, NaiveDate, TimeDelta, TimeZone, Timelike, Utc, Weekday};
 use colored::Colorize;
 
 // ---------------------------------------------------------------------------
 // Local time conversion
 // ---------------------------------------------------------------------------
 
-/// Converts a UTC timestamp to a local DateTime for user-facing grouping
+/// Converts a UTC timestamp to local time for user-facing grouping
 /// (time-of-day, weekday, date).
+#[cfg(not(test))]
 fn to_local(ts: &DateTime<Utc>) -> DateTime<Local> {
     DateTime::<Local>::from(*ts)
+}
+
+/// Keep unit tests deterministic without mutating the process-wide `TZ`
+/// variable, which is unsafe while the test runner has multiple threads.
+#[cfg(test)]
+fn to_local(ts: &DateTime<Utc>) -> DateTime<Utc> {
+    *ts
 }
 
 // ---------------------------------------------------------------------------
@@ -30,10 +38,18 @@ pub struct DateRange {
 
 impl DateRange {
     fn local_day_start(date: NaiveDate) -> Option<DateTime<Utc>> {
-        let local = Local
-            .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
-            .earliest()?;
-        Some(local.with_timezone(&Utc))
+        #[cfg(test)]
+        {
+            Some(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?))
+        }
+
+        #[cfg(not(test))]
+        {
+            let local = Local
+                .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+                .earliest()?;
+            Some(local.with_timezone(&Utc))
+        }
     }
 
     /// No filtering — all-time.
@@ -92,14 +108,10 @@ impl DateRange {
 
     /// Returns true if the timestamp falls within this range.
     pub fn contains(&self, ts: &DateTime<Utc>) -> bool {
-        if let Some(start) = &self.start
-            && ts < start
-        {
+        if self.start.as_ref().is_some_and(|start| ts < start) {
             return false;
         }
-        if let Some(end) = &self.end
-            && ts >= end
-        {
+        if self.end.as_ref().is_some_and(|end| ts >= end) {
             return false;
         }
         true
@@ -179,16 +191,12 @@ pub fn compute_basic(
     };
 
     // Average time in queue (from watched events that have time_in_queue_sec)
-    let queue_times: Vec<i64> = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
-        .filter_map(|e| e.time_in_queue_sec)
-        .collect();
+    let queue_times = valid_queue_times(events);
     let avg_time_in_queue_secs = if queue_times.is_empty() {
         None
     } else {
-        let sum: i64 = queue_times.iter().sum();
-        Some(sum as f64 / queue_times.len() as f64)
+        let sum: f64 = queue_times.iter().map(|seconds| *seconds as f64).sum();
+        Some(sum / queue_times.len() as f64)
     };
 
     // Most active weekday for adding videos
@@ -443,11 +451,7 @@ pub fn compute_wrapped(
     };
 
     // Queue time extremes
-    let queue_times: Vec<i64> = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
-        .filter_map(|e| e.time_in_queue_sec)
-        .collect();
+    let queue_times = valid_queue_times(events);
     let fastest_watch_secs = queue_times.iter().min().copied();
     let slowest_watch_secs = queue_times.iter().max().copied();
 
@@ -540,14 +544,21 @@ pub fn compute_wrapped(
 // Helper functions — aggregation
 // ---------------------------------------------------------------------------
 
+fn valid_queue_times(events: &[&Event]) -> Vec<i64> {
+    events
+        .iter()
+        .filter(|event| matches!(event.action, Action::Watched))
+        .filter_map(|event| event.time_in_queue_sec)
+        .filter(|seconds| *seconds >= 0)
+        .collect()
+}
+
 /// Returns deduplicated video IDs for a given action type, preserving first occurrence order.
 fn unique_ids_for_action(events: &[&Event], action: &Action) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut ids = Vec::new();
     for e in events {
-        if std::mem::discriminant(&e.action) == std::mem::discriminant(action)
-            && seen.insert(e.video_id.clone())
-        {
+        if e.action == *action && seen.insert(e.video_id.clone()) {
             ids.push(e.video_id.clone());
         }
     }
@@ -557,7 +568,7 @@ fn unique_ids_for_action(events: &[&Event], action: &Action) -> Vec<String> {
 fn most_active_weekday_for(events: &[&Event], action: &Action) -> Option<(Weekday, usize)> {
     let mut counts: HashMap<Weekday, usize> = HashMap::new();
     for e in events {
-        if std::mem::discriminant(&e.action) == std::mem::discriminant(action) {
+        if e.action == *action {
             *counts.entry(to_local(&e.timestamp).weekday()).or_default() += 1;
         }
     }
@@ -571,9 +582,9 @@ fn top_channels_from(
 ) -> Vec<(String, usize)> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for id in ids {
-        if let Some(m) = metadata.get(*id)
-            && !m.unavailable
-            && !m.channel.is_empty()
+        if let Some(m) = metadata
+            .get(*id)
+            .filter(|m| !m.unavailable && !m.channel.is_empty())
         {
             *counts.entry(&m.channel).or_default() += 1;
         }
@@ -591,7 +602,7 @@ fn monthly_buckets(events: &[&Event], action: &Action) -> Vec<MonthBucket> {
     let mut counts: std::collections::BTreeMap<(i32, u32), usize> =
         std::collections::BTreeMap::new();
     for e in events {
-        if std::mem::discriminant(&e.action) == std::mem::discriminant(action) {
+        if e.action == *action {
             let local = to_local(&e.timestamp);
             let key = (local.year(), local.month());
             *counts.entry(key).or_default() += 1;
@@ -646,7 +657,7 @@ fn time_of_day_distribution(events: &[&Event]) -> Vec<TimeOfDayBucket> {
 fn busiest_day_for(events: &[&Event], action: &Action) -> Option<(NaiveDate, usize)> {
     let mut counts: HashMap<NaiveDate, usize> = HashMap::new();
     for e in events {
-        if std::mem::discriminant(&e.action) == std::mem::discriminant(action) {
+        if e.action == *action {
             let date = to_local(&e.timestamp).date_naive();
             *counts.entry(date).or_default() += 1;
         }
@@ -690,9 +701,9 @@ fn category_breakdown_from(
 ) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for id in ids {
-        if let Some(m) = metadata.get(*id)
-            && !m.unavailable
-            && !m.category_id.is_empty()
+        if let Some(m) = metadata
+            .get(*id)
+            .filter(|m| !m.unavailable && !m.category_id.is_empty())
         {
             let name = categories
                 .get(&m.category_id)
@@ -713,9 +724,7 @@ fn top_tags_from(
 ) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for id in ids {
-        if let Some(m) = metadata.get(*id)
-            && !m.unavailable
-        {
+        if let Some(m) = metadata.get(*id).filter(|m| !m.unavailable) {
             for tag in &m.tags {
                 let normalized = tag.to_lowercase();
                 *counts.entry(normalized).or_default() += 1;
@@ -824,13 +833,13 @@ fn compute_viewer_personality(
     let unique_channels_watched: usize = watched_top_channels.iter().map(|(_, c)| *c).sum();
     let _explores_many = channel_count >= 8;
 
-    let queue_times: Vec<i64> = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
-        .filter_map(|e| e.time_in_queue_sec)
-        .collect();
+    let queue_times = valid_queue_times(events);
     let fast_consumer = if !queue_times.is_empty() {
-        let avg = queue_times.iter().sum::<i64>() as f64 / queue_times.len() as f64;
+        let avg = queue_times
+            .iter()
+            .map(|seconds| *seconds as f64)
+            .sum::<f64>()
+            / queue_times.len() as f64;
         avg < 3600.0 // less than 1 hour avg
     } else {
         false
@@ -921,9 +930,9 @@ fn compute_discovery_day(
     for e in events {
         if matches!(e.action, Action::Watched) {
             let date = to_local(&e.timestamp).date_naive();
-            if let Some(m) = metadata.get(&e.video_id)
-                && !m.unavailable
-                && !m.channel.is_empty()
+            if let Some(m) = metadata
+                .get(&e.video_id)
+                .filter(|m| !m.unavailable && !m.channel.is_empty())
             {
                 day_channels
                     .entry(date)
@@ -960,7 +969,8 @@ fn compute_category_evolution(
     let first_ts = range
         .start
         .unwrap_or(watch_events.first().unwrap().timestamp);
-    let last_ts = range.end.unwrap_or(Utc::now());
+    let now = Utc::now();
+    let last_ts = range.end.map_or(now, |end| end.min(now));
     let span_days = (last_ts - first_ts).num_days();
 
     // Choose period size: quarters if >= 120 days, halves if >= 60, else skip
@@ -987,18 +997,20 @@ fn compute_category_evolution(
         // Find dominant category in this period
         let mut cat_counts: HashMap<String, usize> = HashMap::new();
         for e in &watch_events {
-            if e.timestamp >= period_start
-                && e.timestamp < period_end
-                && let Some(m) = metadata.get(&e.video_id)
-                && !m.unavailable
-                && !m.category_id.is_empty()
-            {
-                let name = categories
-                    .get(&m.category_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Category {}", m.category_id));
-                *cat_counts.entry(name).or_default() += 1;
+            if e.timestamp < period_start || e.timestamp >= period_end {
+                continue;
             }
+            let Some(m) = metadata
+                .get(&e.video_id)
+                .filter(|m| !m.unavailable && !m.category_id.is_empty())
+            else {
+                continue;
+            };
+            let name = categories
+                .get(&m.category_id)
+                .cloned()
+                .unwrap_or_else(|| format!("Category {}", m.category_id));
+            *cat_counts.entry(name).or_default() += 1;
         }
 
         if let Some((cat, _)) = cat_counts.into_iter().max_by_key(|(_, c)| *c) {
@@ -1049,11 +1061,7 @@ fn compute_comfort_video(
 
 /// Computes the queue patience label based on median time-in-queue.
 fn compute_queue_patience(events: &[&Event]) -> Option<(&'static str, i64)> {
-    let mut queue_times: Vec<i64> = events
-        .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
-        .filter_map(|e| e.time_in_queue_sec)
-        .collect();
+    let mut queue_times = valid_queue_times(events);
 
     if queue_times.is_empty() {
         return None;
@@ -1142,7 +1150,8 @@ fn compute_watches_per_week(events: &[&Event], range: &DateRange) -> Option<f64>
     let first = range
         .start
         .unwrap_or(watch_events.first().unwrap().timestamp);
-    let last = range.end.unwrap_or(Utc::now());
+    let now = Utc::now();
+    let last = range.end.map_or(now, |end| end.min(now));
     let span_days = (last - first).num_days().max(1) as f64;
     let weeks = span_days / 7.0;
 
@@ -1667,20 +1676,12 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
-
     use super::*;
 
     use chrono::TimeZone;
 
-    /// Set TZ=UTC so that `to_local()` produces UTC timestamps in tests,
-    /// making assertions deterministic regardless of the host timezone.
-    static INIT_TZ: Once = Once::new();
-    fn init_test_tz() {
-        INIT_TZ.call_once(|| {
-            unsafe { std::env::set_var("TZ", "UTC") };
-        });
-    }
+    // `to_local` and `local_day_start` use UTC under cfg(test).
+    fn init_test_tz() {}
 
     fn make_event(
         action: Action,
@@ -1859,7 +1860,7 @@ mod tests {
 
     #[test]
     fn basic_stats_counts() {
-        let events = vec![
+        let events = [
             make_event(Action::Queued, "a", Utc::now(), None),
             make_event(Action::Queued, "b", Utc::now(), None),
             make_event(Action::Watched, "a", Utc::now(), Some(3600)),
@@ -1878,9 +1879,10 @@ mod tests {
 
     #[test]
     fn basic_stats_avg_queue_time() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(100)),
             make_event(Action::Watched, "b", Utc::now(), Some(200)),
+            make_event(Action::Watched, "c", Utc::now(), Some(-1)),
         ];
         let refs: Vec<&Event> = events.iter().collect();
         let stats = compute_basic(&refs, &[], &HashMap::new());
@@ -1917,7 +1919,7 @@ mod tests {
             make_meta("c", "Channel B", "28", 100, vec![]),
         );
 
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(100)),
             make_event(Action::Watched, "b", Utc::now(), Some(200)),
             make_event(Action::Watched, "c", Utc::now(), Some(50)),
@@ -1967,7 +1969,7 @@ mod tests {
         );
 
         // Same video watched twice — should only count once for metadata stats
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(100)),
             make_event(Action::Watched, "a", Utc::now(), Some(200)),
         ];
@@ -1985,7 +1987,7 @@ mod tests {
 
     #[test]
     fn unique_ids_deduplicates() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
             make_event(Action::Watched, "b", Utc::now(), Some(0)),
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
@@ -1999,7 +2001,7 @@ mod tests {
 
     #[test]
     fn streak_consecutive_days() {
-        let events = vec![
+        let events = [
             make_event(
                 Action::Watched,
                 "a",
@@ -2032,14 +2034,14 @@ mod tests {
 
     #[test]
     fn streak_no_watches() {
-        let events = vec![make_event(Action::Queued, "a", Utc::now(), None)];
+        let events = [make_event(Action::Queued, "a", Utc::now(), None)];
         let refs: Vec<&Event> = events.iter().collect();
         assert_eq!(longest_streak(&refs), 0);
     }
 
     #[test]
     fn streak_single_day() {
-        let events = vec![make_event(Action::Watched, "a", Utc::now(), Some(0))];
+        let events = [make_event(Action::Watched, "a", Utc::now(), Some(0))];
         let refs: Vec<&Event> = events.iter().collect();
         assert_eq!(longest_streak(&refs), 1);
     }
@@ -2047,7 +2049,7 @@ mod tests {
     #[test]
     fn streak_multiple_watches_same_day() {
         let day = Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap();
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", day, Some(0)),
             make_event(Action::Watched, "b", day, Some(0)),
             make_event(Action::Watched, "c", day, Some(0)),
@@ -2060,7 +2062,7 @@ mod tests {
 
     #[test]
     fn time_of_day_buckets() {
-        let events = vec![
+        let events = [
             make_event(
                 Action::Watched,
                 "a",
@@ -2221,7 +2223,7 @@ mod tests {
 
     #[test]
     fn monthly_buckets_groups_correctly() {
-        let events = vec![
+        let events = [
             make_event(
                 Action::Queued,
                 "a",
@@ -2324,7 +2326,7 @@ mod tests {
         let day1c = Utc.with_ymd_and_hms(2025, 3, 14, 18, 0, 0).unwrap();
         let day2 = Utc.with_ymd_and_hms(2025, 3, 15, 10, 0, 0).unwrap();
 
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", day1, Some(0)),
             make_event(Action::Watched, "b", day1b, Some(0)),
             make_event(Action::Watched, "c", day1c, Some(0)),
@@ -2349,7 +2351,7 @@ mod tests {
     fn discovery_day_none_when_single_channel_per_day() {
         let day1 = Utc.with_ymd_and_hms(2025, 3, 14, 10, 0, 0).unwrap();
 
-        let events = vec![make_event(Action::Watched, "a", day1, Some(0))];
+        let events = [make_event(Action::Watched, "a", day1, Some(0))];
 
         let mut metadata = HashMap::new();
         metadata.insert("a".to_string(), make_meta("a", "Chan A", "10", 100, vec![]));
@@ -2363,7 +2365,7 @@ mod tests {
 
     #[test]
     fn comfort_video_finds_most_rewatched() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
             make_event(Action::Watched, "b", Utc::now(), Some(0)),
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
@@ -2383,7 +2385,7 @@ mod tests {
 
     #[test]
     fn comfort_video_none_when_no_rewatches() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
             make_event(Action::Watched, "b", Utc::now(), Some(0)),
         ];
@@ -2397,7 +2399,7 @@ mod tests {
 
     #[test]
     fn queue_patience_impulsive() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(300)), // 5 min
             make_event(Action::Watched, "b", Utc::now(), Some(600)), // 10 min
         ];
@@ -2410,7 +2412,7 @@ mod tests {
 
     #[test]
     fn queue_patience_thoughtful() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(7200)), // 2h
             make_event(Action::Watched, "b", Utc::now(), Some(14400)), // 4h
         ];
@@ -2422,7 +2424,7 @@ mod tests {
 
     #[test]
     fn queue_patience_fermenter() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(172800)), // 2 days
             make_event(Action::Watched, "b", Utc::now(), Some(259200)), // 3 days
         ];
@@ -2434,7 +2436,7 @@ mod tests {
 
     #[test]
     fn queue_patience_aged() {
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(700000)), // > 1 week
             make_event(Action::Watched, "b", Utc::now(), Some(800000)),
         ];
@@ -2446,7 +2448,7 @@ mod tests {
 
     #[test]
     fn queue_patience_none_when_no_watches() {
-        let events = vec![make_event(Action::Queued, "a", Utc::now(), None)];
+        let events = [make_event(Action::Queued, "a", Utc::now(), None)];
         let refs: Vec<&Event> = events.iter().collect();
         let result = compute_queue_patience(&refs);
         assert!(result.is_none());
@@ -2456,7 +2458,7 @@ mod tests {
 
     #[test]
     fn total_throughput_counts_unique_ids() {
-        let events = vec![
+        let events = [
             make_event(Action::Queued, "a", Utc::now(), None),
             make_event(Action::Queued, "b", Utc::now(), None),
             make_event(Action::Watched, "a", Utc::now(), Some(0)),
@@ -2535,7 +2537,7 @@ mod tests {
         let sun = Utc.with_ymd_and_hms(2025, 1, 5, 10, 0, 0).unwrap();
         let mon = Utc.with_ymd_and_hms(2025, 1, 6, 10, 0, 0).unwrap();
 
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", sat, Some(0)),
             make_event(Action::Watched, "b", sun, Some(0)),
             make_event(Action::Watched, "c", sat, Some(0)),
@@ -2556,7 +2558,7 @@ mod tests {
         let tue = Utc.with_ymd_and_hms(2025, 1, 7, 10, 0, 0).unwrap();
         let wed = Utc.with_ymd_and_hms(2025, 1, 8, 10, 0, 0).unwrap();
 
-        let events = vec![
+        let events = [
             make_event(Action::Watched, "a", mon, Some(0)),
             make_event(Action::Watched, "b", tue, Some(0)),
             make_event(Action::Watched, "c", wed, Some(0)),
@@ -2570,7 +2572,7 @@ mod tests {
 
     #[test]
     fn weekend_weekday_none_when_no_watches() {
-        let events = vec![make_event(Action::Queued, "a", Utc::now(), None)];
+        let events = [make_event(Action::Queued, "a", Utc::now(), None)];
         let refs: Vec<&Event> = events.iter().collect();
         let result = compute_weekend_weekday(&refs);
         assert!(result.is_none());
@@ -2591,7 +2593,7 @@ mod tests {
         categories.insert("20".to_string(), "Gaming".to_string());
 
         // Watches span a full year, first half Music, second half Gaming
-        let events = vec![
+        let events = [
             make_event(
                 Action::Watched,
                 "a",
@@ -2632,7 +2634,7 @@ mod tests {
 
     #[test]
     fn category_evolution_empty_when_span_too_short() {
-        let events = vec![
+        let events = [
             make_event(
                 Action::Watched,
                 "a",
@@ -2665,7 +2667,7 @@ mod tests {
         let mut categories = HashMap::new();
         categories.insert("10".to_string(), "Music".to_string());
 
-        let events = vec![
+        let events = [
             make_event(
                 Action::Watched,
                 "a",

@@ -6,7 +6,7 @@ Guidance for coding agents working in this repository.
 
 - `ytq` is a Rust CLI for managing a personal YouTube queue.
 - Rust edition: `2024`
-- Minimum toolchain: Rust `1.85+`
+- Minimum supported Rust version (MSRV): latest stable Rust, currently `1.97+`
 - Main crates in use: `clap`, `anyhow`, `serde`, `serde_json`, `chrono`, `colored`, `regex`, `url`, `ureq`, `etcetera`, `rusqlite` (bundled, with chrono support), `open`
 - The app is offline-first. Network access is only used for explicit metadata/category fetch operations.
 
@@ -69,18 +69,18 @@ cargo run -- add https://youtube.com/watch?v=dQw4w9WgXcQ
 
 ## CI Expectations
 
-GitHub Actions currently runs:
+GitHub Actions currently runs on latest stable Rust:
 
-- `cargo test`
+- `cargo test --locked --all-targets --all-features`
 - `cargo fmt --check`
-- `cargo clippy -- -D warnings`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
 
 Before considering work complete, run:
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
 ```
 
 ## Testing Notes

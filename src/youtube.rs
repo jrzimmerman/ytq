@@ -22,8 +22,12 @@ pub fn extract_video_id(input: &str) -> Result<String> {
         format!("https://{input}")
     };
 
-    // Parse URL
+    // Parse URL. Only web URLs are accepted; allowing other schemes would
+    // produce canonical HTTPS output from inputs that were never valid links.
     let parsed = Url::parse(&url_string).map_err(|_| anyhow!("Invalid URL format"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        bail!("YouTube URLs must use http or https");
+    }
 
     let id = if let Some(host) = parsed.host_str() {
         if host == "youtu.be" {
@@ -468,6 +472,13 @@ mod tests {
     fn http_youtu_be_url() {
         let result = extract_video_id("http://youtu.be/-wtIMTCHWuI");
         assert_eq!(result.unwrap(), "-wtIMTCHWuI");
+    }
+
+    #[test]
+    fn non_http_scheme_is_rejected() {
+        let result = extract_video_id("ftp://youtube.com/watch?v=dQw4w9WgXcQ");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("http or https"));
     }
 
     // === Fragment timestamps ===

@@ -41,7 +41,7 @@ pub fn add(input: &str) -> Result<()> {
         println!("{} {id}", "Added:".green());
 
         // Hint about fetching metadata when online features are enabled
-        let cfg = store::load_config(&paths.config_file);
+        let cfg = store::load_config(&paths.config_file)?;
         if !cfg.offline {
             println!("  Run {} to get video metadata.", "`ytq fetch`".bold());
         }
@@ -54,7 +54,7 @@ pub fn add(input: &str) -> Result<()> {
 
 pub fn next(target: Option<&str>) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let cfg = store::load_config(&paths.config_file);
+    let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths)?;
 
     // If a specific target is provided, parse it first
@@ -87,7 +87,7 @@ pub fn next(target: Option<&str>) -> Result<()> {
 fn open_and_record_watch(db: &Db, paths: &paths::AppPaths, removed: RemovedVideo) -> Result<()> {
     let video = &removed.video;
     let duration = Utc::now().signed_duration_since(video.added_at);
-    let sec_in_queue = duration.num_seconds();
+    let sec_in_queue = duration.num_seconds().max(0);
 
     let event = Event {
         timestamp: Utc::now(),
@@ -150,7 +150,7 @@ pub fn remove(target: &str) -> Result<()> {
 
 pub fn list() -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let cfg = store::load_config(&paths.config_file);
+    let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths)?;
 
     let metadata = if !cfg.offline {
@@ -290,7 +290,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 pub fn peek(n: usize) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let cfg = store::load_config(&paths.config_file);
+    let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths)?;
 
     let metadata = if !cfg.offline {
@@ -332,12 +332,12 @@ pub fn stats(
     let range = resolve_date_range(all, week, month, year, from, to)?;
 
     // Load events and filter by date range
-    let all_events = store::stream_history(&paths.history_dir);
+    let all_events = store::stream_history(&paths.history_dir)?;
     let filtered = stats::filter_events(&all_events, &range);
 
     // Load metadata + categories (categories.json still lives on disk)
     let metadata = db.load_all_metadata()?;
-    let categories = store::load_categories(&paths.categories_file);
+    let categories = store::load_categories(&paths.categories_file)?;
 
     // Get current queue video IDs for queue profile stats
     let queue_ids = db.queue_ids()?;
@@ -424,9 +424,7 @@ fn resolve_date_range(
                     .map_err(|_| anyhow::anyhow!("invalid --to date '{s}': expected YYYY-MM-DD"))
             })
             .transpose()?;
-        if let (Some(from), Some(to)) = (from_date, to_date)
-            && from > to
-        {
+        if matches!((from_date, to_date), (Some(from), Some(to)) if from > to) {
             bail!("--from date must not be later than --to date");
         }
         return DateRange::custom(from_date, to_date)
@@ -445,7 +443,7 @@ fn resolve_date_range(
 
 pub fn config(key: &str, value: &str) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let mut cfg = store::load_config(&paths.config_file);
+    let mut cfg = store::load_config(&paths.config_file)?;
 
     // Trim incidental whitespace so users pasting values with leading/trailing
     // spaces (especially API keys) don't end up with stored garbage.
@@ -506,7 +504,7 @@ pub fn fetch(
     refresh_categories: bool,
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
-    let cfg = store::load_config(&paths.config_file);
+    let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths)?;
 
     // Check offline mode
@@ -530,8 +528,12 @@ pub fn fetch(
                 store::save_categories(&paths.categories_file, &categories)?;
                 eprintln!("Updated {} video categories.", categories.len());
             }
-            Err(e) => {
-                eprintln!("{} Failed to fetch categories: {e:#}", "Warning:".yellow());
+            Err(error) if refresh_categories => return Err(error),
+            Err(error) => {
+                eprintln!(
+                    "{} Failed to fetch categories: {error:#}",
+                    "Warning:".yellow()
+                );
             }
         }
     }
@@ -680,7 +682,7 @@ fn collect_ids_for_scope(
     }
 
     if use_history {
-        let events = store::stream_history(&paths.history_dir);
+        let events = store::stream_history(&paths.history_dir)?;
         for event in &events {
             ids.push(event.video_id.clone());
         }

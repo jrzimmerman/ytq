@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-You need **Rust 1.85+** installed (for the 2024 edition). If you don't have it, get it here: [rustup.rs](https://rustup.rs/)
+You need the **latest stable Rust** installed (currently Rust 1.97+). The repository's `rust-toolchain.toml` tracks the stable channel. If you don't have Rust, get it from [rustup.rs](https://rustup.rs/); existing rustup users can update with `rustup update stable`.
 
 ### Install from Source
 
@@ -78,7 +78,7 @@ ytq random
 | `ytq list` | `l` | `ls` | List all. Shows the full queue. |
 | `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
 | `ytq fetch [target]` | `f` | | Fetch video metadata from YouTube Data API v3. |
-| `ytq stats` | `s` | | Metrics. Shows your viewing statistics. Supports `--wrapped`, `--week`, `--month`, `--year`, `--from`, `--to`. |
+| `ytq stats` | `s` | | Metrics. Shows current-year viewing statistics by default. Supports `--wrapped`, `--all`, `--week`, `--month`, `--year`, `--from`, `--to`. |
 | `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
 | `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
 
@@ -167,8 +167,11 @@ When metadata is available, `list` and `peek` show enriched output with video ti
 ytq tracks your queue behavior and viewing patterns. The `stats` command shows a summary of your activity:
 
 ```bash
-# All-time overview
+# Current-year overview
 ytq stats
+
+# All-time overview
+ytq stats --all
 
 # Full "wrapped" deep dive with charts and leaderboards
 ytq stats --wrapped
@@ -239,7 +242,7 @@ After the import:
 - The legacy `queue.json.lock` (used by the previous file-locking layer) is removed.
 - All future writes go to `ytq.db`. No code path ever reads the `.bak` files again.
 
-If the import fails midway, the transaction rolls back and the `.bak` files are not created — you can re-run any `ytq` command to retry once the underlying problem is fixed.
+If the database import fails midway, its transaction rolls back and the `.bak` files are not created, so you can retry after fixing the underlying problem. Migration also stops before importing if a destination `.bak` file already exists, preventing an older backup from being overwritten. A rare filesystem error while renaming the source files is reported explicitly after the database transaction has committed; the imported database remains usable.
 
 ### How to verify the migration
 
@@ -353,20 +356,20 @@ cargo run -- list
 cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-CI currently runs:
+CI runs the full test and Clippy suites on the latest stable Rust and checks formatting:
 
 ```bash
-cargo test
+cargo test --locked --all-targets --all-features
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 Before opening a PR, run:
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
 ```
 
 ## Uninstallation
