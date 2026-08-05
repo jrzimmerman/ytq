@@ -30,15 +30,15 @@ Metadata is stored separately from queue and history data to keep core operation
 
 | File | Purpose | Format |
 |------|---------|--------|
-| `queue.json` | Video queue (ID, URL, added_at) | JSON array |
-| `metadata.json` | Video metadata cache (title, channel, duration, tags, etc.) | JSON object keyed by ID |
+| `ytq.db` | Video queue and metadata cache | SQLite |
 | `categories.json` | YouTube video category lookup table | JSON object (ID -> name) |
 | `history/*.jsonl` | Event history logs | Append-only JSONL |
 
 - `add`, `remove`, `next` remain instant (no network I/O)
 - `fetch` is the only command that makes network requests
 - `list` and `peek` join queue data with metadata at display time (local, fast)
-- Video categories are stored separately for future stats/wrapped analytics
+- Queue and metadata writes use indexed SQLite operations
+- Video categories are stored separately for stats/wrapped analytics
 
 ### Design Principles
 
@@ -46,7 +46,7 @@ Metadata is stored separately from queue and history data to keep core operation
 2. **`add` is always instant** — The `add` command never makes network requests. Metadata is fetched separately via `fetch`.
 3. **Graceful degradation** — If `offline: false` but no API key is configured, `fetch` shows a clear error with setup instructions.
 4. **Opt-in messaging** — Only show "run `ytq fetch` for metadata" hints when `offline: false`, so offline-first users aren't nagged.
-5. **Decoupled metadata** — Video metadata lives in `metadata.json`, not embedded in queue or history. This keeps core data structures unchanged and enables independent refresh/update cycles.
+5. **Decoupled metadata** — Video metadata lives in its own SQLite table, not embedded in queue or history. This keeps core data structures unchanged and enables independent refresh/update cycles.
 
 ### Configuration Behavior
 
@@ -67,10 +67,9 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
 
 - [x] **Phase 2: Models & Storage**
   - [x] `VideoMeta` struct: id, title, channel, channel_id, duration_seconds, published_at, category_id, tags, fetched_at
-  - [x] `metadata.json` sidecar file — JSON object keyed by video ID, read-modify-write with atomic temp-file-then-rename
+  - [x] SQLite metadata table keyed by video ID
   - [x] `categories.json` — separate lookup table for YouTube video categories
   - [x] `Video` and `Event` structs unchanged — metadata fully decoupled
-  - [x] No migration required — existing data continues to work
 
 - [x] **Phase 3: Fetch Command**
   - [x] `ytq fetch` — fetch metadata for queue videos missing metadata
@@ -80,7 +79,7 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
   - [x] `--refresh-categories` flag to force category refresh
   - [x] Categories auto-fetched on first run, cached thereafter
   - [x] Progress indicator ("Fetching 1-50 of N...")
-  - [x] Metadata deduplication via read-modify-write (upsert into HashMap, write full file)
+  - [x] Metadata deduplication via transactional SQLite upserts
   - [ ] Respect YouTube API rate limits with exponential backoff
 
 - [x] **Phase 4: Enhanced Display**
@@ -133,7 +132,8 @@ All basic stats plus:
 
 ### Time Filtering
 
-- [x] `ytq stats` — All-time statistics (default)
+- [x] `ytq stats` — Current-year statistics (default)
+- [x] `ytq stats --all` — All-time statistics
 - [x] `ytq stats --week` — Last 7 days
 - [x] `ytq stats --month` — Last 30 days
 - [x] `ytq stats --month 2026-01` — Specific month
@@ -151,28 +151,24 @@ Queue and metadata storage migrated from JSON files to a single SQLite database 
 
 ### Architecture
 
-| File | Status | Notes |
-|------|--------|-------|
-| `ytq.db` | NEW | SQLite database holding queue + metadata tables |
-| `queue.json` | Migrated -> `.bak` | One-time import on first run; original kept as backup |
-| `metadata.json` | Migrated -> `.bak` | Same |
-| `categories.json` | Unchanged | Tiny, rarely written |
-| `config.json` | Unchanged | Rarely written |
-| `history/*.jsonl` | Unchanged | Append-only logs already O(1) |
-| `queue.json.lock` | Removed | Replaced by SQLite WAL mode |
+| File | Purpose |
+|------|---------|
+| `ytq.db` | SQLite database holding queue + metadata tables |
+| `categories.json` | Tiny, rarely written category cache |
+| `config.json` | User configuration |
+| `history/*.jsonl` | Append-only event logs |
 
 ### Design Principles
 
 1. **Hot-path writes are O(1)** — `add`, `next`, `remove`, `random` issue a single indexed SQL statement instead of rewriting the full queue file.
-2. **Transparent migration** — On first run after upgrade, legacy JSON files are imported into SQLite within a single transaction. Originals are renamed to `.bak` and retained indefinitely.
-3. **No async runtime** — Uses `rusqlite` (synchronous), matching ytq's existing synchronous design. No tokio dependency.
-4. **Bundled SQLite** — `rusqlite` is built with `features = ["bundled", "chrono"]` so users have zero runtime dependencies and `DateTime<Utc>` round-trips natively.
-5. **Event log stays as JSONL** — Append-only history doesn't benefit from a database; partitioned monthly files remain.
+2. **No async runtime** — Uses `rusqlite` (synchronous), matching ytq's existing synchronous design. No tokio dependency.
+3. **Bundled SQLite** — `rusqlite` is built with `features = ["bundled", "chrono"]` so users have zero runtime dependencies and `DateTime<Utc>` round-trips natively.
+4. **Event log stays as JSONL** — Append-only history doesn't benefit from a database; partitioned monthly files remain.
 
 ### Implementation Phases
 
 - [x] **Phase 1: Database module**
-  - [x] Add `rusqlite = { version = "0.39", features = ["bundled", "chrono"] }`
+  - [x] Add `rusqlite` with bundled SQLite and chrono support
   - [x] Remove `fd-lock` dependency
   - [x] New `src/db.rs` with `Db` struct, schema init, PRAGMAs (WAL, foreign_keys)
   - [x] In-memory test harness via `Connection::open_in_memory()`
@@ -182,7 +178,7 @@ Queue and metadata storage migrated from JSON files to a single SQLite database 
   - [x] `metadata` table: id PK, full VideoMeta columns, tags as JSON TEXT with `CHECK (json_valid(tags))`
   - [x] Indexes on `queue.position`, `metadata.channel`, `metadata.category_id`
 
-- [x] **Phase 3: Command migration**
+- [x] **Phase 3: Command integration**
   - [x] `add` -> `INSERT OR IGNORE` (dedup via PRIMARY KEY)
   - [x] `next` (default) -> `DELETE ... WHERE position = MIN/MAX(position) RETURNING *`
   - [x] `next <target>` / `remove` -> `DELETE WHERE id = ? RETURNING *`
@@ -192,15 +188,9 @@ Queue and metadata storage migrated from JSON files to a single SQLite database 
   - [x] `stats` -> materialize metadata HashMap from db (stats.rs unchanged)
   - [x] `info` -> show db path + row counts
 
-- [x] **Phase 4: One-time migration**
-  - [x] On `Db::open`, detect legacy `queue.json` and empty db -> import in one transaction
-  - [x] Rename `queue.json` -> `queue.json.bak`, `metadata.json` -> `metadata.json.bak`
-  - [x] Print summary line with row counts
-
-- [x] **Phase 5: Tests**
+- [x] **Phase 4: Tests**
   - [x] Dedup, FIFO/LIFO ordering, random pop, remove
   - [x] Metadata upsert preserves tombstones
-  - [x] Legacy JSON import fixture
   - [x] Tags array round-trip through JSON TEXT column
 
 ---
@@ -217,7 +207,6 @@ Ideas that may be explored later:
 - `ytq export` command to dump the SQLite database back to JSON for portability
 - `ytq vacuum` wrapper around SQLite `VACUUM` for users who heavily churn the queue
 - Migrate event history from JSONL to SQLite if append-only log scans ever become a bottleneck (currently bounded by `stats` invocations only)
-- Auto-delete legacy `queue.json.bak` and `metadata.json.bak` after a successful run, instead of keeping them indefinitely
 
 ---
 

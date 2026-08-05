@@ -3,7 +3,7 @@ use std::env;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
@@ -46,8 +46,16 @@ impl Config {
     /// Environment variable takes precedence; empty strings are ignored.
     fn resolve_api_key(env_val: Option<String>, config_val: &Option<String>) -> Option<String> {
         env_val
-            .filter(|k| !k.is_empty())
-            .or_else(|| config_val.clone())
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .or_else(|| {
+                config_val
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+            })
+            .map(str::to_owned)
     }
 }
 
@@ -59,7 +67,7 @@ pub struct Video {
 }
 
 /// Video metadata fetched from the YouTube Data API v3.
-/// Stored in a separate metadata.json sidecar file, keyed by video ID.
+/// Stored in the SQLite metadata table, keyed by video ID.
 /// Videos that the API returns no data for are stored as tombstones
 /// with `unavailable: true` so they aren't retried on every fetch.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -78,7 +86,7 @@ pub struct VideoMeta {
     pub unavailable: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Queued,
     Watched,
@@ -166,8 +174,8 @@ mod tests {
 
     #[test]
     fn resolve_api_key_empty_env_falls_back_to_config() {
-        let config_val = Some("config-key".to_string());
-        let env_val = Some(String::new());
+        let config_val = Some(" config-key ".to_string());
+        let env_val = Some("  ".to_string());
 
         let result = Config::resolve_api_key(env_val, &config_val);
         assert_eq!(result.as_deref(), Some("config-key"));

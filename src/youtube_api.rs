@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use crate::models::VideoMeta;
 use crate::youtube;
@@ -14,6 +15,16 @@ const YOUTUBE_CATEGORIES_API: &str = "https://www.googleapis.com/youtube/v3/vide
 
 /// Maximum number of video IDs per API request (YouTube API limit).
 const BATCH_SIZE: usize = 50;
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+static HTTP_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .user_agent(concat!("ytq/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+});
 
 /// Regex for parsing ISO 8601 durations (e.g., PT1H2M3S, PT3M33S, PT45S).
 static DURATION_RE: LazyLock<Regex> =
@@ -22,12 +33,23 @@ static DURATION_RE: LazyLock<Regex> =
 /// Parses an ISO 8601 duration string (e.g., "PT3M33S") into total seconds.
 pub fn parse_iso8601_duration(duration: &str) -> Option<u64> {
     let caps = DURATION_RE.captures(duration)?;
+    if caps.get(1).is_none() && caps.get(2).is_none() && caps.get(3).is_none() {
+        return None;
+    }
 
-    let hours: u64 = caps.get(1).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-    let minutes: u64 = caps.get(2).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-    let seconds: u64 = caps.get(3).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+    let parse_component = |index| {
+        caps.get(index)
+            .map(|value| value.as_str().parse::<u64>().ok())
+            .unwrap_or(Some(0))
+    };
+    let hours = parse_component(1)?;
+    let minutes = parse_component(2)?;
+    let seconds = parse_component(3)?;
 
-    Some(hours * 3600 + minutes * 60 + seconds)
+    hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)
 }
 
 /// Formats a duration in seconds as "H:MM:SS" or "M:SS".
@@ -45,10 +67,16 @@ pub fn format_duration(seconds: u64) -> String {
 
 /// Fetches metadata for a batch of video IDs from the YouTube Data API v3.
 /// IDs are automatically chunked into batches of 50 (API limit).
-/// Returns metadata for all videos that were successfully resolved.
 /// Videos that are deleted/private/unavailable are silently skipped.
-pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMeta>> {
-    let mut all_metadata = Vec::new();
+///
+/// `on_chunk` is invoked with the metadata resolved from each request as soon
+/// as that request completes, so callers can persist incrementally. A large
+/// backlog takes hundreds of requests, and a failure partway through should not
+/// throw away everything already downloaded.
+pub fn fetch_video_metadata<F>(ids: &[String], api_key: &str, mut on_chunk: F) -> Result<()>
+where
+    F: FnMut(Vec<VideoMeta>) -> Result<()>,
+{
     let total = ids.len();
 
     for (chunk_idx, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
@@ -57,11 +85,17 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
         eprintln!("Fetching {start}-{end} of {total}...");
 
         let id_param = chunk.join(",");
-        let url =
-            format!("{YOUTUBE_API_BASE}?part=snippet,contentDetails&id={id_param}&key={api_key}");
 
-        // ureq 3.x returns Err for non-2xx status codes
-        let mut response = match ureq::get(&url).call() {
+        // Query values are encoded by ureq, rather than interpolated into a
+        // URL. This keeps unusual key characters from changing the request.
+        let request = HTTP_AGENT
+            .get(YOUTUBE_API_BASE)
+            .query("part", "snippet,contentDetails")
+            .query("id", &id_param)
+            .query("key", api_key);
+
+        // ureq 3.x returns Err for non-2xx status codes.
+        let mut response = match request.call() {
             Ok(resp) => resp,
             Err(ureq::Error::StatusCode(403)) => {
                 bail!(
@@ -87,6 +121,7 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
             .context("unexpected API response: missing 'items' array")?;
 
         let now = Utc::now();
+        let mut chunk_metadata = Vec::with_capacity(items.len());
 
         for item in items {
             let id = item["id"].as_str().unwrap_or_default().to_string();
@@ -143,7 +178,7 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
                 .to_string();
             let duration_seconds = parse_iso8601_duration(&duration).unwrap_or(0);
 
-            all_metadata.push(VideoMeta {
+            chunk_metadata.push(VideoMeta {
                 id,
                 title,
                 channel,
@@ -157,17 +192,23 @@ pub fn fetch_video_metadata(ids: &[String], api_key: &str) -> Result<Vec<VideoMe
                 unavailable: false,
             });
         }
+
+        on_chunk(chunk_metadata)?;
     }
 
-    Ok(all_metadata)
+    Ok(())
 }
 
 /// Fetches YouTube video categories for the US region.
 /// Returns a HashMap mapping category ID (e.g., "10") to name (e.g., "Music").
 pub fn fetch_categories(api_key: &str) -> Result<HashMap<String, String>> {
-    let url = format!("{YOUTUBE_CATEGORIES_API}?part=snippet&regionCode=US&key={api_key}");
+    let request = HTTP_AGENT
+        .get(YOUTUBE_CATEGORIES_API)
+        .query("part", "snippet")
+        .query("regionCode", "US")
+        .query("key", api_key);
 
-    let mut response = match ureq::get(&url).call() {
+    let mut response = match request.call() {
         Ok(resp) => resp,
         Err(ureq::Error::StatusCode(code)) => {
             bail!("YouTube Categories API returned HTTP {code}");
@@ -244,7 +285,9 @@ mod tests {
     fn parse_duration_invalid() {
         assert_eq!(parse_iso8601_duration("invalid"), None);
         assert_eq!(parse_iso8601_duration(""), None);
+        assert_eq!(parse_iso8601_duration("PT"), None);
         assert_eq!(parse_iso8601_duration("P1D"), None);
+        assert_eq!(parse_iso8601_duration("PT18446744073709551615H"), None);
     }
 
     #[test]

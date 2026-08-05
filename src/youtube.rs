@@ -22,15 +22,19 @@ pub fn extract_video_id(input: &str) -> Result<String> {
         format!("https://{input}")
     };
 
-    // Parse URL
-    let parsed = Url::parse(&url_string).map_err(|_| anyhow!("Invalid URL format"))?;
+    // Parse URL. Only web URLs are accepted; allowing other schemes would
+    // produce canonical HTTPS output from inputs that were never valid links.
+    let parsed = Url::parse(&url_string).map_err(|_| anyhow!("invalid URL format"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        bail!("YouTube URLs must use http or https");
+    }
 
     let id = if let Some(host) = parsed.host_str() {
         if host == "youtu.be" {
             // Case: youtu.be/ID
             let id = parsed.path().trim_matches('/').to_string();
             if !is_valid_id_format(&id) {
-                bail!("Invalid video ID in youtu.be URL");
+                bail!("invalid video ID in youtu.be URL");
             }
             id
         } else if host == "youtube.com" || host.ends_with(".youtube.com") {
@@ -51,7 +55,7 @@ pub fn extract_video_id(input: &str) -> Result<String> {
                     .map(|(_, v)| v.to_string())
                     .ok_or_else(|| {
                         anyhow!(
-                            "Could not find video ID. Supported formats:\n  \
+                            "could not find video ID. Supported formats:\n  \
                              - youtube.com/watch?v=ID\n  \
                              - youtube.com/shorts/ID\n  \
                              - youtube.com/live/ID\n  \
@@ -60,10 +64,10 @@ pub fn extract_video_id(input: &str) -> Result<String> {
                     })?
             }
         } else {
-            bail!("Not a YouTube domain");
+            bail!("not a YouTube domain");
         }
     } else {
-        bail!("Invalid URL");
+        bail!("invalid URL");
     };
 
     // Final validation
@@ -71,7 +75,7 @@ pub fn extract_video_id(input: &str) -> Result<String> {
         Ok(id)
     } else {
         bail!(
-            "Extracted ID '{id}' is invalid (must be exactly 11 characters: A-Z, a-z, 0-9, -, _)"
+            "extracted ID '{id}' is invalid (must be exactly 11 characters: A-Z, a-z, 0-9, -, _)"
         );
     }
 }
@@ -104,7 +108,7 @@ fn check_unsupported_url(path: &str, query: Option<&str>) -> Result<()> {
         || path.starts_with("/user/")
     {
         bail!(
-            "Channel URLs are not supported. Please provide a direct video link (e.g., youtube.com/watch?v=ID)"
+            "channel URLs are not supported. Please provide a direct video link (e.g., youtube.com/watch?v=ID)"
         );
     }
 
@@ -113,13 +117,13 @@ fn check_unsupported_url(path: &str, query: Option<&str>) -> Result<()> {
         || query.is_some_and(|q| q.contains("list=") && !q.contains("v="))
     {
         bail!(
-            "Playlist URLs are not supported. Please provide a direct video link (e.g., youtube.com/watch?v=ID)"
+            "playlist URLs are not supported. Please provide a direct video link (e.g., youtube.com/watch?v=ID)"
         );
     }
 
     // Search results
     if path.starts_with("/results") {
-        bail!("Search result URLs are not supported. Please provide a direct video link.");
+        bail!("search result URLs are not supported. Please provide a direct video link.");
     }
 
     Ok(())
@@ -317,7 +321,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Channel URLs are not supported")
+                .contains("channel URLs are not supported")
         );
     }
 
@@ -329,7 +333,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Channel URLs are not supported")
+                .contains("channel URLs are not supported")
         );
     }
 
@@ -341,7 +345,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Channel URLs are not supported")
+                .contains("channel URLs are not supported")
         );
     }
 
@@ -353,7 +357,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Channel URLs are not supported")
+                .contains("channel URLs are not supported")
         );
     }
 
@@ -366,7 +370,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Playlist URLs are not supported")
+                .contains("playlist URLs are not supported")
         );
     }
 
@@ -379,7 +383,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Search result URLs are not supported")
+                .contains("search result URLs are not supported")
         );
     }
 
@@ -470,6 +474,13 @@ mod tests {
         assert_eq!(result.unwrap(), "-wtIMTCHWuI");
     }
 
+    #[test]
+    fn non_http_scheme_is_rejected() {
+        let result = extract_video_id("ftp://youtube.com/watch?v=dQw4w9WgXcQ");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("http or https"));
+    }
+
     // === Fragment timestamps ===
     #[test]
     fn watch_url_with_fragment_timestamp() {
@@ -488,7 +499,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Invalid video ID in youtu.be URL")
+                .contains("invalid video ID in youtu.be URL")
         );
     }
 
@@ -514,7 +525,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Playlist URLs are not supported")
+                .contains("playlist URLs are not supported")
         );
     }
 

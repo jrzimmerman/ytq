@@ -2,17 +2,37 @@
 name = "ytq"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+description = "An offline-first YouTube queue for the terminal"
+license = "MIT"
+repository = "https://github.com/jrzimmerman/ytq"
+readme = "README.md"
+keywords = ["cli", "queue", "terminal", "youtube"]
+categories = ["command-line-utilities"]
 
 [dependencies]
-anyhow = "1.0.100"
-chrono = { version = "0.4.43", features = ["serde"] }
-clap = { version = "4.5.56", features = ["derive"] }
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.5", features = ["derive"] }
 colored = "3.1.1"
 etcetera = "0.11.0"
-open = "5.3.3"
-regex = "1.12.2"
-rusqlite = { version = "0.39.0", features = ["bundled", "chrono"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-ureq = { version = "3.2.0", features = ["json"] }
+open = "5.4.0"
+regex = "1.13.1"
+rusqlite = { version = "0.40.1", features = ["bundled", "chrono"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ureq = { version = "3.3.0", features = ["json"] }
 url = "2.5.8"
+
+# Keep the local build gated the same way CI is, so `cargo build` fails on the
+# same lints that `cargo clippy -- -D warnings` would reject.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

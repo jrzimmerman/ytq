@@ -1,18 +1,21 @@
 mod commands;
 mod db;
 mod models;
+mod output;
 mod paths;
 mod stats;
 mod store;
 mod youtube;
 mod youtube_api;
 
+use std::num::NonZeroUsize;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 #[derive(Parser)]
-#[command(name = "ytq", version)]
+#[command(name = "ytq", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -50,8 +53,8 @@ enum Commands {
     #[command(alias = "k")]
     Peek {
         /// How many videos to show
-        #[arg(default_value_t = 1)]
-        n: usize,
+        #[arg(default_value = "1")]
+        n: NonZeroUsize,
     },
 
     /// Remove a video by ID or URL
@@ -69,27 +72,47 @@ enum Commands {
         wrapped: bool,
 
         /// Show stats for all time instead of just the current year
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["week", "month", "year", "from", "to"])]
         all: bool,
 
         /// Filter to last 7 days
-        #[arg(long, conflicts_with_all = ["month", "year", "from", "to"])]
+        #[arg(long, conflicts_with_all = ["all", "month", "year", "from", "to"])]
         week: bool,
 
         /// Last 30 days, or a specific month (YYYY-MM)
-        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "YYYY-MM")]
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "",
+            value_name = "YYYY-MM",
+            conflicts_with_all = ["all", "week", "year", "from", "to"]
+        )]
         month: Option<String>,
 
         /// Last 365 days, or a specific year (YYYY)
-        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "YYYY")]
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "",
+            value_name = "YYYY",
+            conflicts_with_all = ["all", "week", "month", "from", "to"]
+        )]
         year: Option<String>,
 
         /// Start date for custom range (YYYY-MM-DD)
-        #[arg(long, conflicts_with_all = ["week", "month", "year"], value_name = "DATE")]
+        #[arg(
+            long,
+            conflicts_with_all = ["all", "week", "month", "year"],
+            value_name = "DATE"
+        )]
         from: Option<String>,
 
         /// End date for custom range (YYYY-MM-DD)
-        #[arg(long, conflicts_with_all = ["week", "month", "year"], value_name = "DATE")]
+        #[arg(
+            long,
+            conflicts_with_all = ["all", "week", "month", "year"],
+            value_name = "DATE"
+        )]
         to: Option<String>,
     },
 
@@ -110,6 +133,7 @@ enum Commands {
     #[command(alias = "f")]
     Fetch {
         /// Video ID(s), URL(s), or comma-separated list to fetch/refresh
+        #[arg(conflicts_with_all = ["queue", "history", "all"])]
         target: Option<String>,
 
         /// Fetch for queue videos only (default when no flags given)
@@ -126,7 +150,7 @@ enum Commands {
 
         /// Maximum number of videos to fetch (useful for testing)
         #[arg(long)]
-        limit: Option<usize>,
+        limit: Option<NonZeroUsize>,
 
         /// Force re-fetch metadata, including previously unavailable videos
         #[arg(long)]
@@ -156,7 +180,7 @@ fn run() -> Result<()> {
         Commands::Add { input } => commands::add(&input),
         Commands::Next { target } => commands::next(target.as_deref()),
         Commands::List => commands::list(),
-        Commands::Peek { n } => commands::peek(n),
+        Commands::Peek { n } => commands::peek(n.get()),
         Commands::Remove { target } => commands::remove(&target),
         Commands::Stats {
             wrapped,
@@ -182,10 +206,34 @@ fn run() -> Result<()> {
             queue,
             history,
             all,
-            limit,
+            limit.map(NonZeroUsize::get),
             force,
             refresh_categories,
         ),
         Commands::Random => commands::random(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_rejects_conflicting_periods() {
+        assert!(Cli::try_parse_from(["ytq", "stats", "--all", "--week"]).is_err());
+        assert!(
+            Cli::try_parse_from(["ytq", "stats", "--month", "2025-01", "--year", "2025"]).is_err()
+        );
+    }
+
+    #[test]
+    fn fetch_rejects_target_with_scope() {
+        assert!(Cli::try_parse_from(["ytq", "fetch", "dQw4w9WgXcQ", "--history"]).is_err());
+    }
+
+    #[test]
+    fn positive_counts_are_required() {
+        assert!(Cli::try_parse_from(["ytq", "peek", "0"]).is_err());
+        assert!(Cli::try_parse_from(["ytq", "fetch", "--limit", "0"]).is_err());
     }
 }

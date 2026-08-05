@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-You need **Rust 1.85+** installed (for the 2024 edition). If you don't have it, get it here: [rustup.rs](https://rustup.rs/)
+You need **Rust 1.95 or newer**. Development tracks the stable channel via `rust-toolchain.toml`, but 1.95 is the tested minimum and CI verifies it on every change. If you don't have Rust, get it from [rustup.rs](https://rustup.rs/); existing rustup users can update with `rustup update stable`.
 
 ### Install from Source
 
@@ -78,7 +78,7 @@ ytq random
 | `ytq list` | `l` | `ls` | List all. Shows the full queue. |
 | `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
 | `ytq fetch [target]` | `f` | | Fetch video metadata from YouTube Data API v3. |
-| `ytq stats` | `s` | | Metrics. Shows your viewing statistics. Supports `--wrapped`, `--week`, `--month`, `--year`, `--from`, `--to`. |
+| `ytq stats` | `s` | | Metrics. Shows current-year viewing statistics by default. Supports `--wrapped`, `--all`, `--week`, `--month`, `--year`, `--from`, `--to`. |
 | `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
 | `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
 
@@ -167,8 +167,11 @@ When metadata is available, `list` and `peek` show enriched output with video ti
 ytq tracks your queue behavior and viewing patterns. The `stats` command shows a summary of your activity:
 
 ```bash
-# All-time overview
+# Current-year overview
 ytq stats
+
+# All-time overview
+ytq stats --all
 
 # Full "wrapped" deep dive with charts and leaderboards
 ytq stats --wrapped
@@ -213,101 +216,25 @@ ytq uses platform-specific paths for data storage. Run `ytq info` to see where y
 | `categories.json` | YouTube video category lookup table |
 | `history/*.jsonl` | Event history logs (partitioned by month) |
 
-Earlier versions of ytq stored the queue and metadata as `queue.json` and `metadata.json`. On first run after upgrading, those files are imported into `ytq.db` automatically — see [SQLite Migration](#sqlite-migration) below.
+Queue and metadata are read exclusively from `ytq.db`.
 
-## SQLite Migration
+`config.json` can hold your API key, so it is created with owner-only permissions (`0600`) on Unix. Both `config.json` and `categories.json` are written atomically — a crash mid-write leaves the previous file intact rather than truncating it.
 
-ytq originally stored the queue and metadata as JSON files. As personal backlogs grew past several thousand videos, every `ytq add` had to rewrite the full `queue.json`, making batch tools (for example [`youtube-tab-manager`](https://github.com/jrzimerman/youtube-tab-manager)) painfully slow. Storage now lives in a single SQLite database at `ytq.db` with indexed primary keys, write-ahead logging, and O(1) inserts.
+### Overriding the storage locations
 
-### When the migration runs
+Two environment variables override the platform defaults. They are useful for sandboxing, for keeping separate queues, and for testing against throwaway data:
 
-The migration is automatic and one-time. It runs the first time any `ytq` command opens the database after upgrading, provided both of the following are true:
-
-- `ytq.db` is missing or has empty `queue` and `metadata` tables.
-- A legacy `queue.json` and/or `metadata.json` exists in the data directory.
-
-On success you'll see a one-line summary on stderr, for example:
-
-```
-Migrated 13472 video(s) and 13552 metadata entries to SQLite.
-```
-
-After the import:
-
-- `queue.json` is renamed to `queue.json.bak`.
-- `metadata.json` is renamed to `metadata.json.bak`.
-- The legacy `queue.json.lock` (used by the previous file-locking layer) is removed.
-- All future writes go to `ytq.db`. No code path ever reads the `.bak` files again.
-
-If the import fails midway, the transaction rolls back and the `.bak` files are not created — you can re-run any `ytq` command to retry once the underlying problem is fixed.
-
-### How to verify the migration
-
-Run `ytq info` after upgrading. Post-migration, it prints the database path along with row counts for the `queue` and `metadata` tables:
-
-```
-Data Paths
----------------
-Config:     /Users/you/.config/ytq/config.json
-Database:   /Users/you/.local/share/ytq/ytq.db
-Categories: /Users/you/.local/share/ytq/categories.json
-History:    /Users/you/.local/share/ytq/history
-Queue Rows:    13472
-Metadata Rows: 13552
-```
-
-Cross-check by comparing against the legacy files:
+| Variable | Overrides |
+|----------|-----------|
+| `YTQ_CONFIG_DIR` | Directory holding `config.json` |
+| `YTQ_DATA_DIR` | Directory holding `ytq.db`, `categories.json`, and `history/` |
 
 ```bash
-# Count videos in the legacy queue.json.bak vs the migrated db
-jq 'length' ~/.local/share/ytq/queue.json.bak
-ytq info | grep "Queue Rows"
-
-# Count metadata entries
-jq 'length' ~/.local/share/ytq/metadata.json.bak
-ytq info | grep "Metadata Rows"
-
-# Spot-check ordering
-ytq list | head -5
+# Run against a scratch queue without touching your real one
+YTQ_DATA_DIR=/tmp/ytq-scratch YTQ_CONFIG_DIR=/tmp/ytq-scratch ytq list
 ```
 
-The row counts should match exactly.
-
-### How to test the migration safely
-
-If you want to dry-run the migration without touching your real data:
-
-```bash
-# 1. Snapshot your current data dir
-cp -a ~/.local/share/ytq ~/.local/share/ytq.pre-migration-backup
-
-# 2. Run any ytq command (info is the safest — it does nothing else)
-ytq info
-
-# 3. Verify the migration summary printed to stderr and row counts look right
-ytq info
-
-# 4. If anything looks off, roll back by restoring the snapshot:
-rm -rf ~/.local/share/ytq
-mv ~/.local/share/ytq.pre-migration-backup ~/.local/share/ytq
-```
-
-On Windows, substitute `%APPDATA%\ytq` for `~/.local/share/ytq`.
-
-### How to clean up after the migration
-
-Once you've confirmed the migration worked and your queue looks right, the `.bak` files are safe to delete. They are never read again by ytq.
-
-```bash
-# Remove the legacy JSON files
-rm ~/.local/share/ytq/queue.json.bak
-rm ~/.local/share/ytq/metadata.json.bak
-
-# If you took a pre-migration snapshot during testing, remove that too
-rm -rf ~/.local/share/ytq.pre-migration-backup
-```
-
-There's no rush — the `.bak` files are kept indefinitely so you can hold on to them as long as you like. They sit alongside `ytq.db` but don't grow or interfere with operations.
+Unset or empty values fall back to the platform defaults. Run `ytq info` to confirm which paths are in effect.
 
 ## Development
 
@@ -353,20 +280,20 @@ cargo run -- list
 cargo run -- add https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-CI currently runs:
+CI runs the full test and Clippy suites on the latest stable Rust and checks formatting:
 
 ```bash
-cargo test
+cargo test --locked --all-targets --all-features
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 Before opening a PR, run:
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
 ```
 
 ## Uninstallation
