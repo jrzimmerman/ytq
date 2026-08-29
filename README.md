@@ -190,20 +190,28 @@ ytq stats --wrapped --year 2025           # Combine with --wrapped
 ```
 
 **Basic stats** (always available from the event log):
-- Videos added, watched, skipped counts
-- Completion rate and queue depth
-- Average time in queue before watching
-- Most active day of week
+- First-time additions and re-additions
+- Unique videos opened and total viewing sessions
+- Queue exits opened versus removed without opening, without claiming completion
+- Average time in queue before the first open
+- Most active day of week and queue depth
+
+A pop records an open, not proof that a video was finished. Opening a re-added
+video creates another viewing session but never infers a rewatch. Unique-video
+statistics count each video ID only on its first lifetime open.
 
 **Wrapped stats** (`--wrapped` flag adds):
-- Monthly activity bar charts (added and watched)
-- Time-of-day distribution (morning/afternoon/evening/night)
-- Busiest day and longest watch streak
+- Monthly activity bar charts for first additions, re-additions, and viewing sessions
+- Viewing-session time-of-day distribution (morning/afternoon/evening/night)
+- Busiest day and longest viewing-session streak
 - Top channels and category breakdown with bar charts
-- Top tags, skip rate, queue throughput
-- Longest/shortest videos, fastest/slowest time-to-watch
+- Top tags, queue-exit behavior, queue throughput
+- Longest/shortest videos, fastest/slowest time-to-first-open
 
-When metadata is available (via `ytq fetch --history`), stats are enriched with total watch time, channel rankings, categories, tags, and video durations. Without metadata, core event-log stats still work — no network requests are ever made by `stats`.
+When metadata is available (via `ytq fetch --history`), stats are enriched with total video duration, channel rankings, categories, tags, and video durations. Duration is not presented as time actually watched because ytq cannot observe completion. Without metadata, core event-log stats still work - no network requests are ever made by `stats`.
+
+See [`STATS.md`](STATS.md) for precise event semantics, the real-usage review,
+and candidate Wrapped insights.
 
 ## Data Storage
 

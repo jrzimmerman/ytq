@@ -138,10 +138,43 @@ impl DateRange {
 }
 
 /// Filters events to those within the given date range.
+#[cfg(test)]
 pub fn filter_events<'a>(events: &'a [Event], range: &DateRange) -> Vec<&'a Event> {
     events
         .iter()
-        .filter(|e| range.contains(&e.timestamp))
+        .filter(|event| range.contains(&event.timestamp))
+        .collect()
+}
+
+/// Returns the first lifetime event for each video and action when that first
+/// event falls inside the requested range. The complete history must be
+/// supplied in chronological order so an event before the range can establish
+/// that a later queue addition or open is a repeat.
+fn first_lifetime_events_in_range<'a>(
+    events: &[&'a Event],
+    action: &Action,
+    range: &DateRange,
+) -> Vec<&'a Event> {
+    let mut seen = std::collections::HashSet::new();
+    events
+        .iter()
+        .copied()
+        .filter(|event| event.action == *action && seen.insert(event.video_id.as_str()))
+        .filter(|event| range.contains(&event.timestamp))
+        .collect()
+}
+
+fn repeated_lifetime_events_in_range<'a>(
+    events: &[&'a Event],
+    action: &Action,
+    range: &DateRange,
+) -> Vec<&'a Event> {
+    let mut seen = std::collections::HashSet::new();
+    events
+        .iter()
+        .copied()
+        .filter(|event| event.action == *action && !seen.insert(event.video_id.as_str()))
+        .filter(|event| range.contains(&event.timestamp))
         .collect()
 }
 
@@ -151,10 +184,12 @@ pub fn filter_events<'a>(events: &'a [Event], range: &DateRange) -> Vec<&'a Even
 
 pub struct BasicStats {
     pub added: usize,
+    pub readded: usize,
     pub watched: usize,
+    pub viewing_sessions: usize,
     pub skipped: usize,
     pub queue_depth: usize,
-    pub completion_rate: f64,
+    pub opened_exit_rate: f64,
     pub avg_time_in_queue_secs: Option<f64>,
     pub most_active_weekday: Option<(Weekday, usize)>,
     // Watch history metadata (deduplicated by video ID)
@@ -165,33 +200,55 @@ pub struct BasicStats {
     pub top_queue_channels: Vec<(String, usize)>,
 }
 
+#[cfg(test)]
 pub fn compute_basic(
     events: &[&Event],
     queue_ids: &[String],
     metadata: &HashMap<String, VideoMeta>,
 ) -> BasicStats {
-    let added = events
+    compute_basic_for_range(events, queue_ids, metadata, &DateRange::all_time())
+}
+
+pub fn compute_basic_for_range(
+    events: &[&Event],
+    queue_ids: &[String],
+    metadata: &HashMap<String, VideoMeta>,
+    range: &DateRange,
+) -> BasicStats {
+    let period_events: Vec<&Event> = events
         .iter()
-        .filter(|e| matches!(e.action, Action::Queued))
+        .copied()
+        .filter(|event| range.contains(&event.timestamp))
+        .collect();
+    let first_queued = first_lifetime_events_in_range(events, &Action::Queued, range);
+    let first_watched = first_lifetime_events_in_range(events, &Action::Watched, range);
+
+    let queue_additions = period_events
+        .iter()
+        .filter(|event| matches!(event.action, Action::Queued))
         .count();
-    let watched = events
+    let added = first_queued.len();
+    let readded = queue_additions.saturating_sub(added);
+    let watched = first_watched.len();
+    let viewing_sessions = period_events
         .iter()
-        .filter(|e| matches!(e.action, Action::Watched))
+        .filter(|event| matches!(event.action, Action::Watched))
         .count();
-    let skipped = events
+    let skipped = period_events
         .iter()
-        .filter(|e| matches!(e.action, Action::Skipped))
+        .filter(|event| matches!(event.action, Action::Skipped))
         .count();
 
-    let removed = watched + skipped;
-    let completion_rate = if removed > 0 {
-        watched as f64 / removed as f64
+    let queue_exits = viewing_sessions + skipped;
+    let opened_exit_rate = if queue_exits > 0 {
+        viewing_sessions as f64 / queue_exits as f64
     } else {
         0.0
     };
 
-    // Average time in queue (from watched events that have time_in_queue_sec)
-    let queue_times = valid_queue_times(events);
+    // Only the first open contributes queue-time statistics. Re-opened videos
+    // have a reset added_at timestamp and would otherwise skew this metric.
+    let queue_times = valid_queue_times(&first_watched);
     let avg_time_in_queue_secs = if queue_times.is_empty() {
         None
     } else {
@@ -200,10 +257,10 @@ pub fn compute_basic(
     };
 
     // Most active weekday for adding videos
-    let most_active_weekday = most_active_weekday_for(events, &Action::Queued);
+    let most_active_weekday = most_active_weekday_for(&period_events, &Action::Queued);
 
-    // Watch history: deduplicate watched IDs for metadata stats
-    let unique_watched_ids = unique_ids_for_action(events, &Action::Watched);
+    // Video profile statistics use first lifetime opens, not repeat sessions.
+    let unique_watched_ids = unique_ids_for_action(&first_watched, &Action::Watched);
     let watched_refs: Vec<&str> = unique_watched_ids.iter().map(|s| s.as_str()).collect();
 
     let has_watch_metadata = watched_refs
@@ -256,10 +313,12 @@ pub fn compute_basic(
 
     BasicStats {
         added,
+        readded,
         watched,
+        viewing_sessions,
         skipped,
         queue_depth: queue_ids.len(),
-        completion_rate,
+        opened_exit_rate,
         avg_time_in_queue_secs,
         most_active_weekday,
         total_watch_time_secs,
@@ -294,7 +353,8 @@ pub struct WrappedStats {
 
     // Monthly trends
     pub added_by_month: Vec<MonthBucket>,
-    pub watched_by_month: Vec<MonthBucket>,
+    pub readded_by_month: Vec<MonthBucket>,
+    pub viewing_sessions_by_month: Vec<MonthBucket>,
 
     // Time of day distribution (for watched events)
     pub time_of_day: Vec<TimeOfDayBucket>,
@@ -319,15 +379,15 @@ pub struct WrappedStats {
     pub longest_video: Option<VideoDurationInfo>,
     pub shortest_video: Option<VideoDurationInfo>,
 
-    // Skip rate
-    pub skip_rate: f64,
+    // Share of queue exits removed without opening
+    pub removed_without_open_rate: f64,
 
     // Queue time extremes
     pub fastest_watch_secs: Option<i64>,
     pub slowest_watch_secs: Option<i64>,
 
-    // Queue throughput (watches per week)
-    pub watches_per_week: Option<f64>,
+    // Viewing activity (open sessions per week)
+    pub viewing_sessions_per_week: Option<f64>,
 
     // --- Fun Wrapped Insights ---
 
@@ -345,9 +405,6 @@ pub struct WrappedStats {
 
     // Category evolution: dominant category per time period
     pub category_evolution: Vec<CategoryPhase>,
-
-    // Comfort video: most re-watched video (id, title, watch_count)
-    pub comfort_video: Option<(String, String, usize)>,
 
     // Queue patience: (fun label, median time-in-queue secs)
     pub queue_patience: Option<(&'static str, i64)>,
@@ -369,10 +426,18 @@ pub fn compute_wrapped(
     categories: &HashMap<String, String>,
     range: &DateRange,
 ) -> WrappedStats {
-    let basic = compute_basic(events, queue_ids, metadata);
+    let period_events: Vec<&Event> = events
+        .iter()
+        .copied()
+        .filter(|event| range.contains(&event.timestamp))
+        .collect();
+    let first_queued = first_lifetime_events_in_range(events, &Action::Queued, range);
+    let first_watched = first_lifetime_events_in_range(events, &Action::Watched, range);
+    let readded = repeated_lifetime_events_in_range(events, &Action::Queued, range);
+    let basic = compute_basic_for_range(events, queue_ids, metadata, range);
 
-    // Deduplicated watched IDs for metadata stats
-    let unique_watched_ids = unique_ids_for_action(events, &Action::Watched);
+    // Video profile statistics use unique first lifetime opens.
+    let unique_watched_ids = unique_ids_for_action(&first_watched, &Action::Watched);
     let watched_refs: Vec<&str> = unique_watched_ids.iter().map(|s| s.as_str()).collect();
     let has_watch_meta = watched_refs
         .iter()
@@ -385,17 +450,14 @@ pub fn compute_wrapped(
         .any(|id| metadata.get(*id).is_some_and(|m| !m.unavailable));
 
     // Monthly trends
-    let added_by_month = monthly_buckets(events, &Action::Queued);
-    let watched_by_month = monthly_buckets(events, &Action::Watched);
+    let added_by_month = monthly_buckets(&first_queued, &Action::Queued);
+    let readded_by_month = monthly_buckets(&readded, &Action::Queued);
+    let viewing_sessions_by_month = monthly_buckets(&period_events, &Action::Watched);
 
-    // Time of day distribution (for watched events)
-    let time_of_day = time_of_day_distribution(events);
-
-    // Busiest single day (by watched count)
-    let busiest_day = busiest_day_for(events, &Action::Watched);
-
-    // Longest watch streak
-    let longest_streak = longest_streak(events);
+    // Session-oriented activity remains useful even when an open resumes a video.
+    let time_of_day = time_of_day_distribution(&period_events);
+    let busiest_day = busiest_day_for(&period_events, &Action::Watched);
+    let longest_streak = longest_streak(&period_events);
 
     // Queue profile
     let queue_top_channels = if has_queue_meta {
@@ -442,30 +504,30 @@ pub fn compute_wrapped(
         (None, None, None)
     };
 
-    // Skip rate
-    let removed = basic.watched + basic.skipped;
-    let skip_rate = if removed > 0 {
-        basic.skipped as f64 / removed as f64
+    // Queue-exit behavior. Opening is not treated as proof of completion.
+    let queue_exits = basic.viewing_sessions + basic.skipped;
+    let removed_without_open_rate = if queue_exits > 0 {
+        basic.skipped as f64 / queue_exits as f64
     } else {
         0.0
     };
 
-    // Queue time extremes
-    let queue_times = valid_queue_times(events);
+    // Queue time extremes use only each video's first lifetime open.
+    let queue_times = valid_queue_times(&first_watched);
     let fastest_watch_secs = queue_times.iter().min().copied();
     let slowest_watch_secs = queue_times.iter().max().copied();
 
-    // Watches per week
-    let watches_per_week = compute_watches_per_week(events, range);
+    // Viewing sessions per week
+    let viewing_sessions_per_week = compute_watches_per_week(&period_events, range);
 
     // --- Fun Wrapped Insights ---
 
     let viewer_personality = compute_viewer_personality(
-        events,
+        &first_watched,
         &time_of_day,
         longest_streak,
-        watches_per_week,
-        skip_rate,
+        viewing_sessions_per_week,
+        removed_without_open_rate,
         queue_ids.len(),
         basic.watched,
         &watched_top_channels,
@@ -481,22 +543,20 @@ pub fn compute_wrapped(
     };
 
     let discovery_day = if has_watch_meta {
-        compute_discovery_day(events, metadata)
+        compute_discovery_day(&period_events, metadata)
     } else {
         None
     };
 
     let category_evolution = if has_watch_meta {
-        compute_category_evolution(events, metadata, categories, range)
+        compute_category_evolution(&first_watched, metadata, categories, range)
     } else {
         vec![]
     };
 
-    let comfort_video = compute_comfort_video(events, metadata);
+    let queue_patience = compute_queue_patience(&first_watched);
 
-    let queue_patience = compute_queue_patience(events);
-
-    let total_throughput = compute_total_throughput(events);
+    let total_throughput = compute_total_throughput(&period_events);
 
     let oldest_video = if has_watch_meta {
         compute_oldest_video(&watched_refs, metadata)
@@ -504,12 +564,13 @@ pub fn compute_wrapped(
         None
     };
 
-    let weekend_vs_weekday = compute_weekend_weekday(events);
+    let weekend_vs_weekday = compute_weekend_weekday(&period_events);
 
     WrappedStats {
         basic,
         added_by_month,
-        watched_by_month,
+        readded_by_month,
+        viewing_sessions_by_month,
         time_of_day,
         busiest_day,
         longest_streak,
@@ -523,16 +584,15 @@ pub fn compute_wrapped(
         watched_avg_duration_secs,
         longest_video,
         shortest_video,
-        skip_rate,
+        removed_without_open_rate,
         fastest_watch_secs,
         slowest_watch_secs,
-        watches_per_week,
+        viewing_sessions_per_week,
         viewer_personality,
         channel_loyalty,
         watching_age,
         discovery_day,
         category_evolution,
-        comfort_video,
         queue_patience,
         total_throughput,
         oldest_video,
@@ -1033,32 +1093,6 @@ fn compute_category_evolution(
     phases
 }
 
-/// Finds the most re-watched video (video_id appearing in multiple Watched events).
-fn compute_comfort_video(
-    events: &[&Event],
-    metadata: &HashMap<String, VideoMeta>,
-) -> Option<(String, String, usize)> {
-    let mut watch_counts: HashMap<&str, usize> = HashMap::new();
-    for e in events {
-        if matches!(e.action, Action::Watched) {
-            *watch_counts.entry(&e.video_id).or_default() += 1;
-        }
-    }
-
-    let (id, count) = watch_counts
-        .into_iter()
-        .filter(|(_, c)| *c >= 2) // Must be watched at least twice
-        .max_by_key(|(_, c)| *c)?;
-
-    let title = metadata
-        .get(id)
-        .filter(|m| !m.unavailable)
-        .map(|m| m.title.clone())
-        .unwrap_or_default();
-
-    Some((id.to_string(), title, count))
-}
-
 /// Computes the queue patience label based on median time-in-queue.
 fn compute_queue_patience(events: &[&Event]) -> Option<(&'static str, i64)> {
     let mut queue_times = valid_queue_times(events);
@@ -1171,11 +1205,16 @@ pub fn print_basic(stats: &BasicStats, range: &DateRange, has_metadata_available
     outln!("Period: {}", range.label());
     outln!();
 
-    outln!("Videos Added:    {}", stats.added);
-    outln!("Videos Watched:  {}", stats.watched);
-    outln!("Videos Skipped:  {}", stats.skipped);
-    outln!("Completion Rate: {}", format_percent(stats.completion_rate));
-    outln!("Queue Depth:     {}", stats.queue_depth);
+    outln!("Videos Added:          {}", stats.added);
+    outln!("Videos Re-added:       {}", stats.readded);
+    outln!("Unique Videos Opened:  {}", stats.watched);
+    outln!("Viewing Sessions:      {}", stats.viewing_sessions);
+    outln!("Removed Without Open:  {}", stats.skipped);
+    outln!(
+        "Queue Exits Opened:    {}",
+        format_percent(stats.opened_exit_rate)
+    );
+    outln!("Queue Depth:           {}", stats.queue_depth);
 
     outln!();
 
@@ -1184,7 +1223,7 @@ pub fn print_basic(stats: &BasicStats, range: &DateRange, has_metadata_available
     }
 
     if let Some(secs) = stats.total_watch_time_secs {
-        outln!("Total Watch Time:  {}", format_duration_long(secs));
+        outln!("Total Video Duration: {}", format_duration_long(secs));
     }
 
     if let Some((day, count)) = &stats.most_active_weekday {
@@ -1208,7 +1247,7 @@ pub fn print_basic(stats: &BasicStats, range: &DateRange, has_metadata_available
     // Watched channels (if any watches)
     if !stats.top_watched_channels.is_empty() {
         outln!();
-        outln!("{}", "Top Channels (Watched)".bold());
+        outln!("{}", "Top Channels (Opened)".bold());
         for (i, (channel, count)) in stats.top_watched_channels.iter().enumerate() {
             let videos_label = if *count == 1 { "video" } else { "videos" };
             outln!("  {}. {channel}  ({count} {videos_label})", i + 1);
@@ -1237,15 +1276,20 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
     outln!();
 
     // --- Core counts ---
-    outln!("Videos Added:    {}", stats.basic.added);
-    outln!("Videos Watched:  {}", stats.basic.watched);
-    outln!("Videos Skipped:  {}", stats.basic.skipped);
+    outln!("Videos Added:          {}", stats.basic.added);
+    outln!("Videos Re-added:       {}", stats.basic.readded);
+    outln!("Unique Videos Opened:  {}", stats.basic.watched);
+    outln!("Viewing Sessions:      {}", stats.basic.viewing_sessions);
+    outln!("Removed Without Open:  {}", stats.basic.skipped);
     outln!(
-        "Completion Rate: {}",
-        format_percent(stats.basic.completion_rate)
+        "Queue Exits Opened:    {}",
+        format_percent(stats.basic.opened_exit_rate)
     );
-    outln!("Skip Rate:       {}", format_percent(stats.skip_rate));
-    outln!("Queue Depth:     {}", stats.basic.queue_depth);
+    outln!(
+        "Queue Exits Removed:   {}",
+        format_percent(stats.removed_without_open_rate)
+    );
+    outln!("Queue Depth:           {}", stats.basic.queue_depth);
 
     outln!();
 
@@ -1257,18 +1301,18 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         );
     }
     if let Some(secs) = stats.fastest_watch_secs {
-        outln!("Fastest Time to Watch: {}", format_duration_human(secs));
+        outln!("Fastest Time to Open:  {}", format_duration_human(secs));
     }
     if let Some(secs) = stats.slowest_watch_secs {
-        outln!("Slowest Time to Watch: {}", format_duration_human(secs));
+        outln!("Slowest Time to Open:  {}", format_duration_human(secs));
     }
-    if let Some(wpw) = stats.watches_per_week {
-        outln!("Watches per Week:      {:.1}", wpw);
+    if let Some(sessions) = stats.viewing_sessions_per_week {
+        outln!("Viewing Sessions/Week: {:.1}", sessions);
     }
 
     // --- Watch time ---
     if let Some(secs) = stats.basic.total_watch_time_secs {
-        outln!("Total Watch Time:      {}", format_duration_long(secs));
+        outln!("Total Video Duration:  {}", format_duration_long(secs));
     }
     if let Some(avg) = stats.watched_avg_duration_secs {
         outln!(
@@ -1286,13 +1330,13 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
             "days"
         };
         outln!(
-            "Longest Watch Streak:  {} {days_label}",
+            "Longest Viewing Streak: {} {days_label}",
             stats.longest_streak
         );
     }
     if let Some((day, count)) = &stats.busiest_day {
         outln!(
-            "Busiest Day:           {} ({count} videos)",
+            "Busiest Day:           {} ({count} viewing sessions)",
             day.format("%Y-%m-%d")
         );
     }
@@ -1307,7 +1351,6 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
         || stats.queue_patience.is_some()
         || stats.weekend_vs_weekday.is_some()
         || stats.discovery_day.is_some()
-        || stats.comfort_video.is_some()
         || stats.oldest_video.is_some()
         || stats.total_throughput > 0
         || !stats.category_evolution.is_empty();
@@ -1327,14 +1370,14 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
 
         if let Some((ref channel, ratio)) = stats.channel_loyalty {
             outln!(
-                "Channel Loyalty:       {:.0}% of your watches were from {}",
+                "Channel Loyalty:       {:.0}% of opened videos were from {}",
                 ratio * 100.0,
                 channel.bold()
             );
         }
 
         if let Some(year) = stats.watching_age {
-            outln!("Watching Age:          You watched like it was {}", year);
+            outln!("Avg Publication Year:  {}", year);
         }
 
         if let Some((label, median)) = stats.queue_patience {
@@ -1362,19 +1405,10 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
             );
         }
 
-        if let Some((ref _id, ref title, count)) = stats.comfort_video {
-            let display = if title.is_empty() { _id } else { title };
-            outln!(
-                "Comfort Video:         {} (watched {} times)",
-                truncate(display, 40),
-                count
-            );
-        }
-
         if let Some((ref _id, ref title, ref published_at)) = stats.oldest_video {
             let display = if title.is_empty() { _id } else { title };
             outln!(
-                "Oldest Video Watched:  {} (published {})",
+                "Oldest Video Opened:   {} (published {})",
                 truncate(display, 35),
                 published_at.format("%Y-%m-%d")
             );
@@ -1402,23 +1436,29 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
     }
 
     // --- Monthly trends ---
-    if !stats.watched_by_month.is_empty() {
+    if !stats.viewing_sessions_by_month.is_empty() {
         outln!();
-        outln!("{}", "Watched by Month".bold());
-        print_bar_chart_monthly(&stats.watched_by_month);
+        outln!("{}", "Viewing Sessions by Month".bold());
+        print_bar_chart_monthly(&stats.viewing_sessions_by_month);
     }
 
     if !stats.added_by_month.is_empty() {
         outln!();
-        outln!("{}", "Added by Month".bold());
+        outln!("{}", "First Added by Month".bold());
         print_bar_chart_monthly(&stats.added_by_month);
+    }
+
+    if !stats.readded_by_month.is_empty() {
+        outln!();
+        outln!("{}", "Re-added by Month".bold());
+        print_bar_chart_monthly(&stats.readded_by_month);
     }
 
     // --- Time of day ---
     let total_tod: usize = stats.time_of_day.iter().map(|b| b.count).sum();
     if total_tod > 0 {
         outln!();
-        outln!("{}", "Time of Day (Watched)".bold());
+        outln!("{}", "Time of Day (Viewing Sessions)".bold());
         let max_count = stats.time_of_day.iter().map(|b| b.count).max().unwrap_or(1);
         let label_width = stats
             .time_of_day
@@ -1485,7 +1525,7 @@ pub fn print_wrapped(stats: &WrappedStats, range: &DateRange, has_metadata_avail
 
     if has_watch_profile {
         outln!();
-        outln!("{}", "--- Watch History ---".bold());
+        outln!("{}", "--- Opened Video Profile ---".bold());
 
         if !stats.watched_top_channels.is_empty() {
             outln!();
@@ -1854,7 +1894,50 @@ mod tests {
         assert_eq!(filtered[0].video_id, "b");
     }
 
+    #[test]
+    fn first_lifetime_watch_excludes_a_reopen_inside_the_range() {
+        let old = Utc.with_ymd_and_hms(2024, 12, 31, 23, 0, 0).unwrap();
+        let recent = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).unwrap();
+        let events = [
+            make_event(Action::Watched, "podcast", old, Some(100)),
+            make_event(Action::Queued, "podcast", recent, None),
+            make_event(Action::Watched, "podcast", recent, Some(200)),
+            make_event(Action::Watched, "new-video", recent, Some(300)),
+        ];
+        let refs: Vec<&Event> = events.iter().collect();
+
+        let first_watches = first_lifetime_events_in_range(
+            &refs,
+            &Action::Watched,
+            &DateRange::specific_year(2025).unwrap(),
+        );
+
+        assert_eq!(first_watches.len(), 1);
+        assert_eq!(first_watches[0].video_id, "new-video");
+    }
+
     // -- compute_basic tests --
+
+    #[test]
+    fn basic_stats_classifies_readd_when_first_add_precedes_range() {
+        let old = Utc.with_ymd_and_hms(2024, 12, 31, 23, 0, 0).unwrap();
+        let recent = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).unwrap();
+        let events = [
+            make_event(Action::Queued, "podcast", old, None),
+            make_event(Action::Queued, "podcast", recent, None),
+        ];
+        let refs: Vec<&Event> = events.iter().collect();
+
+        let stats = compute_basic_for_range(
+            &refs,
+            &[],
+            &HashMap::new(),
+            &DateRange::specific_year(2025).unwrap(),
+        );
+
+        assert_eq!(stats.added, 0);
+        assert_eq!(stats.readded, 1);
+    }
 
     #[test]
     fn basic_stats_counts() {
@@ -1869,10 +1952,12 @@ mod tests {
         let stats = compute_basic(&refs, &queue_ids, &HashMap::new());
 
         assert_eq!(stats.added, 2);
+        assert_eq!(stats.readded, 0);
         assert_eq!(stats.watched, 1);
+        assert_eq!(stats.viewing_sessions, 1);
         assert_eq!(stats.skipped, 1);
         assert_eq!(stats.queue_depth, 2);
-        assert!((stats.completion_rate - 0.5).abs() < f64::EPSILON);
+        assert!((stats.opened_exit_rate - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1959,14 +2044,13 @@ mod tests {
     }
 
     #[test]
-    fn watched_deduplicates_for_metadata() {
+    fn watched_stats_deduplicate_reopened_videos() {
         let mut metadata = HashMap::new();
         metadata.insert(
             "a".to_string(),
             make_meta("a", "Channel A", "10", 300, vec![]),
         );
 
-        // Same video watched twice — should only count once for metadata stats
         let events = [
             make_event(Action::Watched, "a", Utc::now(), Some(100)),
             make_event(Action::Watched, "a", Utc::now(), Some(200)),
@@ -1974,11 +2058,10 @@ mod tests {
         let refs: Vec<&Event> = events.iter().collect();
         let stats = compute_basic(&refs, &[], &metadata);
 
-        // Event count is 2, but watch time is deduped (300, not 600)
-        assert_eq!(stats.watched, 2);
+        assert_eq!(stats.watched, 1);
         assert_eq!(stats.total_watch_time_secs, Some(300));
         assert_eq!(stats.top_watched_channels.len(), 1);
-        assert_eq!(stats.top_watched_channels[0].1, 1); // 1 unique video, not 2 events
+        assert_eq!(stats.top_watched_channels[0].1, 1);
     }
 
     // -- unique_ids_for_action tests --
@@ -2357,40 +2440,6 @@ mod tests {
         let refs: Vec<&Event> = events.iter().collect();
         let result = compute_discovery_day(&refs, &metadata);
         assert!(result.is_none()); // Only 1 channel, not interesting
-    }
-
-    // -- comfort_video tests --
-
-    #[test]
-    fn comfort_video_finds_most_rewatched() {
-        let events = [
-            make_event(Action::Watched, "a", Utc::now(), Some(0)),
-            make_event(Action::Watched, "b", Utc::now(), Some(0)),
-            make_event(Action::Watched, "a", Utc::now(), Some(0)),
-            make_event(Action::Watched, "a", Utc::now(), Some(0)),
-        ];
-
-        let mut metadata = HashMap::new();
-        metadata.insert("a".to_string(), make_meta("a", "Ch", "10", 100, vec![]));
-
-        let refs: Vec<&Event> = events.iter().collect();
-        let result = compute_comfort_video(&refs, &metadata);
-        assert!(result.is_some());
-        let (id, _title, count) = result.unwrap();
-        assert_eq!(id, "a");
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn comfort_video_none_when_no_rewatches() {
-        let events = [
-            make_event(Action::Watched, "a", Utc::now(), Some(0)),
-            make_event(Action::Watched, "b", Utc::now(), Some(0)),
-        ];
-
-        let refs: Vec<&Event> = events.iter().collect();
-        let result = compute_comfort_video(&refs, &HashMap::new());
-        assert!(result.is_none());
     }
 
     // -- queue_patience tests --

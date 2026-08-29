@@ -98,37 +98,38 @@ The `stats` command supports time-based filtering and a `--wrapped` flag for a f
 ### Design Principles
 
 1. **Offline-first** — Core stats (counts, streaks, queue time, trends) always work from the event log alone. No network requests are ever made by `stats`.
-2. **Metadata enrichment** — When metadata is available, stats are enriched with total watch time, channel rankings, categories, tags, and video durations.
+2. **Metadata enrichment** - When metadata is available, stats are enriched with total video duration, channel rankings, categories, tags, and video durations. Opening a video does not imply completion.
 3. **Graceful hints** — When metadata would improve results, a hint is shown: "Run `ytq fetch --history` for richer stats."
 
 ### Basic Stats (`ytq stats`)
 
 Always available from the event log:
 
-- [x] Videos added / watched / skipped counts
-- [x] Completion rate (watched / total removed)
+- [x] First-time additions and re-additions
+- [x] Unique videos opened and total viewing sessions
+- [x] Queue exits opened versus removed without opening
 - [x] Current queue depth
-- [x] Average time in queue before watching
+- [x] Average time in queue before the first open
 - [x] Most active day of week for adding videos
-- [x] Total watch time (when metadata available)
+- [x] Total duration of uniquely opened videos (when metadata is available)
 - [x] Top 3 channels (when metadata available)
 
 ### Wrapped Stats (`ytq stats --wrapped`)
 
 All basic stats plus:
 
-- [x] Monthly activity bar charts (added and watched)
-- [x] Time-of-day distribution (morning/afternoon/evening/night)
+- [x] Monthly activity bar charts (first added, re-added, and viewing sessions)
+- [x] Viewing-session time-of-day distribution (morning/afternoon/evening/night)
 - [x] Busiest single day
-- [x] Longest watch streak (consecutive days)
+- [x] Longest viewing-session streak (consecutive days)
 - [x] Top 10 channels with bar chart
 - [x] Category breakdown with bar chart (joined against `categories.json`)
 - [x] Top 10 tags (normalized, case-insensitive)
 - [x] Average video duration
-- [x] Longest and shortest videos watched
-- [x] Skip rate
-- [x] Fastest and slowest time-to-watch
-- [x] Watches per week (queue throughput)
+- [x] Longest and shortest uniquely opened videos
+- [x] Queue exits opened versus removed without opening
+- [x] Fastest and slowest time-to-first-open
+- [x] Viewing sessions per week
 
 ### Time Filtering
 
@@ -142,6 +143,42 @@ All basic stats plus:
 - [x] `ytq stats --from 2025-06-01 --to 2025-12-31` — Custom date range
 - [x] All period flags composable with `--wrapped`
 - [x] Conflicting period flags rejected with clear errors
+
+### Real-Usage Review and Next Wrapped Iteration
+
+The 2026-08-29 review of the complete history found 23,499 first additions,
+148 re-additions, 236 uniquely opened videos, 258 viewing sessions, and a
+23,356-video queue. See [`STATS.md`](STATS.md) for the complete semantics and
+observations.
+
+Completed as part of the review:
+
+- [x] Separate first-time additions from re-additions
+- [x] Separate unique first opens from viewing sessions
+- [x] Stop describing queue exits as completions
+- [x] Remove the Comfort Video metric because repeated opens do not establish
+  rewatch intent
+- [x] Use full history before applying date-range first/repeated classification
+- [x] Rename metadata-derived watch time to total video duration
+- [x] Add end-to-end coverage for pop, re-add, and later-open history
+
+Prioritized future Wrapped insights:
+
+- [ ] Queue age profile with median, 90th percentile, and age buckets
+- [ ] First-open funnel for first additions versus unique first opens
+- [ ] Channel and category open rates with minimum sample thresholds
+- [ ] Duration preference lift comparing added and uniquely opened videos
+- [ ] First-open latency percentiles and same-day/week/month buckets
+- [ ] Active viewing days and sessions per active day
+- [ ] Re-add follow-through without inferring continuation or rewatch intent
+- [ ] Monthly backlog trajectory and clearly labeled queue-runway projection
+- [ ] Content freshness based on publication-year distributions
+- [ ] Multi-signal personality summaries that can show mixed patterns instead
+  of allowing one time-of-day bucket to dominate the result
+- [ ] Record addition source so imports and bulk workflows can be separated from
+  deliberate individual additions in trend reports
+- [ ] Explore explicit completion or resume actions before adding any completion
+  or rewatch analytics
 
 ---
 

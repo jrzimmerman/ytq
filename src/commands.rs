@@ -332,9 +332,10 @@ pub fn stats(
     // Resolve date range from flags
     let range = resolve_date_range(all, week, month, year, from, to)?;
 
-    // Load events and filter by date range
+    // Load the complete history. Stats need events before the requested range
+    // to distinguish first-time additions/opens from later repeats.
     let all_events = store::stream_history(&paths.history_dir)?;
-    let filtered = stats::filter_events(&all_events, &range);
+    let event_refs: Vec<&Event> = all_events.iter().collect();
 
     // Load metadata + categories (categories.json still lives on disk)
     let metadata = db.load_all_metadata()?;
@@ -347,16 +348,18 @@ pub fn stats(
     let has_metadata = queue_ids
         .iter()
         .any(|id| metadata.get(id).is_some_and(|m| !m.unavailable))
-        || filtered
+        || event_refs
             .iter()
-            .filter(|e| matches!(e.action, Action::Watched))
+            .filter(|event| range.contains(&event.timestamp))
+            .filter(|event| matches!(event.action, Action::Watched))
             .any(|e| metadata.get(&e.video_id).is_some_and(|m| !m.unavailable));
 
     if wrapped {
-        let report = stats::compute_wrapped(&filtered, &queue_ids, &metadata, &categories, &range);
+        let report =
+            stats::compute_wrapped(&event_refs, &queue_ids, &metadata, &categories, &range);
         stats::print_wrapped(&report, &range, has_metadata);
     } else {
-        let report = stats::compute_basic(&filtered, &queue_ids, &metadata);
+        let report = stats::compute_basic_for_range(&event_refs, &queue_ids, &metadata, &range);
         stats::print_basic(&report, &range, has_metadata);
     }
 

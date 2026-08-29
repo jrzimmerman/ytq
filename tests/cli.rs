@@ -274,10 +274,36 @@ fn stats_defaults_to_the_current_year_and_counts_added_videos() {
 
     let stats = env.ok(&["stats"]);
     assert!(stats.contains("YTQ Stats"), "got: {stats}");
-    assert!(stats.contains("Videos Added:    1"), "got: {stats}");
+    assert!(stats.contains("Videos Added:          1"), "got: {stats}");
 
     let all = env.ok(&["stats", "--all"]);
     assert!(all.contains("All Time"), "got: {all}");
+}
+
+#[test]
+fn stats_separates_readds_and_viewing_sessions_without_inferring_rewatches() {
+    let env = TestEnv::new("stats-readded");
+    let history_dir = env.data_dir().join("history");
+    fs::create_dir_all(&history_dir).unwrap();
+    fs::write(
+        history_dir.join("2026-01.jsonl"),
+        concat!(
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"action\":\"Queued\",\"video_id\":\"dQw4w9WgXcQ\",\"time_in_queue_sec\":null}\n",
+            "{\"timestamp\":\"2026-01-02T00:00:00Z\",\"action\":\"Watched\",\"video_id\":\"dQw4w9WgXcQ\",\"time_in_queue_sec\":86400}\n",
+            "{\"timestamp\":\"2026-01-03T00:00:00Z\",\"action\":\"Queued\",\"video_id\":\"dQw4w9WgXcQ\",\"time_in_queue_sec\":null}\n",
+            "{\"timestamp\":\"2026-01-04T00:00:00Z\",\"action\":\"Watched\",\"video_id\":\"dQw4w9WgXcQ\",\"time_in_queue_sec\":86400}\n"
+        ),
+    )
+    .unwrap();
+
+    let stats = env.ok(&["stats", "--all"]);
+    assert!(stats.contains("Videos Added:          1"), "got: {stats}");
+    assert!(stats.contains("Videos Re-added:       1"), "got: {stats}");
+    assert!(stats.contains("Unique Videos Opened:  1"), "got: {stats}");
+    assert!(stats.contains("Viewing Sessions:      2"), "got: {stats}");
+
+    let wrapped = env.ok(&["stats", "--wrapped", "--all"]);
+    assert!(!wrapped.contains("Comfort Video"), "got: {wrapped}");
 }
 
 #[test]
@@ -310,8 +336,8 @@ fn history_survives_a_watched_video_and_feeds_stats() {
     assert!(contents.contains("\"Skipped\""), "got: {contents}");
 
     let stats = env.ok(&["stats"]);
-    assert!(stats.contains("Videos Added:    1"), "got: {stats}");
-    assert!(stats.contains("Videos Skipped:  1"), "got: {stats}");
+    assert!(stats.contains("Videos Added:          1"), "got: {stats}");
+    assert!(stats.contains("Removed Without Open:  1"), "got: {stats}");
 }
 
 #[test]

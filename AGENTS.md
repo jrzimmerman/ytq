@@ -28,6 +28,7 @@ src/paths.rs       Platform-specific path resolution
 src/youtube.rs     YouTube URL and ID parsing
 src/youtube_api.rs YouTube Data API client and duration parsing
 tests/cli.rs       End-to-end tests that run the built binary
+STATS.md            Stats semantics, real-usage findings, and insight backlog
 ```
 
 ## Build, Lint, and Test Commands
@@ -222,9 +223,24 @@ fn load(path: &Path) -> Result<String> {
 
 ### Stats and Time Handling
 
+- Read `STATS.md` before changing stats behavior. It defines the reporting
+  semantics and records findings from the real history.
+- A history `Watched` event means ytq opened and popped a video. It does not
+  prove completion and does not reveal whether a later open is a continuation
+  or a rewatch.
+- Never infer rewatch intent from repeated `Watched` events.
+- Distinguish first lifetime additions, re-additions, unique first opens, and
+  viewing sessions. Content-profile metrics use unique first opens; temporal
+  activity metrics use viewing sessions.
+- Date-filtered reports must inspect the complete chronological history before
+  classifying first and repeated events. Otherwise an event before the range
+  can be misclassified as new inside the range.
+- Metadata duration is video duration, not time actually watched.
 - Stats operate on UTC timestamps internally.
-- Convert to local time for user-facing grouping such as weekdays, dates, and time-of-day buckets.
-- If you change reporting logic, update both computation and rendering tests.
+- Convert to local time for user-facing grouping such as weekdays, dates, and
+  time-of-day buckets.
+- If you change reporting logic, update computation, rendering, documentation,
+  and end-to-end CLI tests.
 
 ### Clippy Preferences Seen in This Repo
 
