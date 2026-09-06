@@ -147,3 +147,10 @@ not infer completion or rewatch intent.
 True completion, resume, and rewatch statistics require explicit intent that is
 not currently captured. A future workflow could add an explicit completion or
 resume action, but existing events must remain interpreted conservatively.
+
+## Implementation Notes for Contributors
+
+- Stats operate on UTC timestamps internally. Convert to local time for
+  user-facing grouping such as weekdays, dates, and time-of-day buckets.
+- If you change reporting logic, update computation, rendering, documentation,
+  and end-to-end CLI tests together.
