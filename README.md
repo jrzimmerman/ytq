@@ -72,8 +72,9 @@ ytq random
 | Command | Shortcut | Aliases | Description |
 |---------|----------|---------|-------------|
 | `ytq add <input>` | `a` | | Add video. Accepts URLs or IDs. |
-| `ytq next [target]` | `n`, `p`, `w`, `o` | `play`, `watch`, `open` | Watch & pop. Opens browser, logs event, removes from queue. |
-| `ytq random` | `r` | `lucky` | Pop and watch a random video from the queue. |
+| `ytq next [target]` | `n`, `p`, `w`, `o` | `play`, `watch`, `open` | Open & pop the next matching video. Supports category, channel, and duration filters. |
+| `ytq random` | `r` | `lucky` | Open & pop a random matching video. Supports the same filters as `next`. |
+| `ytq search [query]` | | | Search cached titles, channels, and IDs. Supports filters, `--limit N` (default 20), and `--all`. |
 | `ytq peek [n]` | `k` | | Look ahead. Show the next n videos (default: 1). |
 | `ytq list` | `l` | `ls` | List all. Shows the full queue. |
 | `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
@@ -81,6 +82,53 @@ ytq random
 | `ytq stats` | `s` | | Metrics. Shows current-year viewing statistics by default. Supports `--wrapped`, `--all`, `--week`, `--month`, `--year`, `--from`, `--to`. |
 | `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
 | `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
+
+## Search and Choose a Video
+
+Search is local and non-destructive. It matches a literal, case-insensitive
+substring in video IDs, cached titles, or cached channel names. Cached metadata
+is displayed even in offline mode; no search or selection command fetches data.
+
+```bash
+ytq search "rust"
+ytq search "sqlite" --channel "Tech Talks"
+ytq search --category tech --max-duration 10m
+ytq search "rust" --limit 50
+ytq search "rust" --all
+```
+
+Use the same constraints when opening a video:
+
+```bash
+# Random tech video no longer than 30 minutes
+ytq random --category tech --max-duration 30m
+
+# Next matching tech video in your configured queue/stack order
+ytq play --category tech --max-duration 30m
+
+# Only have ten minutes?
+ytq random --category tech --max-duration 10m
+ytq next --channel "Web Dev Simplified" --max-duration 10m
+```
+
+Shared filters for `search`, `next` (including `play`/`watch`/`open`), and `random`:
+
+| Flag | Matching behavior |
+|------|-------------------|
+| `--category CATEGORY` | YouTube category ID, exact cached name, or unambiguous partial name. `tech` matches Science & Technology; `28` works without a category-name cache. Ambiguous names report the matching categories. |
+| `--channel CHANNEL` | Case-insensitive literal substring of the cached channel name. |
+| `--max-duration DURATION` | Inclusive duration ceiling. Accepts positive whole numbers with `s`, `m`, or `h`, such as `90s`, `10m`, `30m`, or `1h`. |
+
+All supplied filters must match. Missing/unavailable metadata cannot satisfy a
+metadata constraint, and zero/unknown durations cannot satisfy a time budget.
+The budget describes the video's full duration, not measured playback time.
+Run `ytq fetch` explicitly to enrich missing metadata (requires online features).
+
+Search defaults to the first 20 matches in your configured queue/stack order;
+without a query it browses matching videos. `next` skips nonmatches without
+removing or reordering them. `random` samples uniformly among matching videos.
+A specific `next <target>` must also satisfy any supplied filters. If no video
+matches, nothing is opened or removed.
 
 ## Configuration
 
@@ -151,7 +199,7 @@ ytq fetch --refresh-categories
 
 Metadata is stored in the `metadata` table inside `ytq.db`, keeping reads indexed and writes fast. Video categories are cached in `categories.json` and only fetched on first run (or with `--refresh-categories`).
 
-When metadata is available, `list` and `peek` show enriched output with video titles, channels, and durations:
+When cached metadata is available, `list`, `peek`, and `search` show enriched output with video titles, channels, and durations, even in offline mode:
 
 ```
 4 videos in queue:

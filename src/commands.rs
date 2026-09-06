@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
-use crate::db::{Db, RemovedVideo};
+use crate::db::{Db, RemovedVideo, SelectionOrder};
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
+use crate::selection::SelectionArgs;
 use crate::stats::DateRange;
 use crate::{outln, paths, stats, store, youtube, youtube_api};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
+use unicode_width::UnicodeWidthStr;
 
 pub fn add(input: &str) -> Result<()> {
     // Normalize input before opening the queue, so bad input fails without
@@ -53,7 +55,7 @@ pub fn add(input: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn next(target: Option<&str>) -> Result<()> {
+pub fn next(target: Option<&str>, selection: &SelectionArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
@@ -61,22 +63,19 @@ pub fn next(target: Option<&str>) -> Result<()> {
     // If a specific target is provided, parse it first
     let target_id = target.map(youtube::extract_video_id).transpose()?;
 
-    let video = match target_id {
-        Some(id) => {
-            let removed = db.take_video(&id)?;
-            if removed.is_none() {
-                bail!("video with ID '{id}' not found in queue");
-            }
-            removed
-        }
-        None => match cfg.mode {
-            Mode::Queue => db.take_front()?,
-            Mode::Stack => db.take_back()?,
-        },
-    };
+    let has_constraints = selection.has_constraints();
+    let categories = store::load_categories(&paths.categories_file)?;
+    let selection = selection.resolve(None, &categories)?;
+    let video = db.take_matching(&selection, selection_order(cfg.mode), target_id.as_deref())?;
 
     let Some(removed) = video else {
-        outln!("{}", "Queue is empty.".yellow());
+        if let Some(id) = target_id {
+            if has_constraints {
+                bail!("video with ID '{id}' not found in queue or does not match filters");
+            }
+            bail!("video with ID '{id}' not found in queue");
+        }
+        print_no_matches(&db)?;
         return Ok(());
     };
 
@@ -149,49 +148,87 @@ pub fn remove(target: &str) -> Result<()> {
     Ok(())
 }
 
+fn selection_order(mode: Mode) -> SelectionOrder {
+    match mode {
+        Mode::Queue => SelectionOrder::Queue,
+        Mode::Stack => SelectionOrder::Stack,
+    }
+}
+
+fn print_no_matches(db: &Db) -> Result<()> {
+    if db.queue_len()? == 0 {
+        outln!("{}", "Queue is empty.".yellow());
+    } else {
+        outln!(
+            "{}",
+            "No matching videos in queue (filters use cached metadata only).".yellow()
+        );
+    }
+    Ok(())
+}
+
+pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usize>) -> Result<()> {
+    let paths = paths::AppPaths::init()?;
+    let cfg = store::load_config(&paths.config_file)?;
+    let db = Db::open(&paths.db_file)?;
+    let categories = store::load_categories(&paths.categories_file)?;
+    let selection = selection.resolve(query, &categories)?;
+    // Fetch one extra row to distinguish a complete result from a truncated one.
+    let fetch_limit = limit
+        .map(|n| {
+            n.checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("search limit is too large"))
+        })
+        .transpose()?;
+    let mut videos = db.search_videos(&selection, selection_order(cfg.mode), fetch_limit)?;
+    if videos.is_empty() {
+        print_no_matches(&db)?;
+        return Ok(());
+    }
+    let truncated = limit.is_some_and(|limit| videos.len() > limit);
+    if let Some(limit) = limit {
+        videos.truncate(limit);
+    }
+    outln!(
+        "{} matching video(s) shown ({:?} mode):",
+        videos.len(),
+        cfg.mode
+    );
+    let metadata = db.load_metadata_for(&videos)?;
+    print_list_enriched(&videos, &metadata, !cfg.offline);
+    if truncated {
+        outln!("More matches available; use --limit N or --all.");
+    }
+    Ok(())
+}
+
 pub fn list() -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
-
-    let metadata = if !cfg.offline {
-        db.load_all_metadata()?
-    } else {
-        HashMap::new()
-    };
 
     let queue = db.list_videos()?;
     if queue.is_empty() {
         outln!("{}", "Queue is empty.".yellow());
         return Ok(());
     }
+    let metadata = db.load_metadata_for(&queue)?;
 
     outln!("{} videos in queue:", queue.len());
-
-    if cfg.offline {
-        print_list_offline(&queue);
-    } else {
-        print_list_online(&queue, &metadata);
-    }
+    print_list_enriched(&queue, &metadata, !cfg.offline);
     Ok(())
 }
 
-fn print_list_offline(queue: &[Video]) {
-    // Header
-    outln!("  {:<4} {:<13} Added", "#", "ID");
-    for (i, v) in queue.iter().enumerate() {
-        let local_time: DateTime<Local> = DateTime::from(v.added_at);
-        outln!(
-            "  {:<4} {:<13} {}",
-            i + 1,
-            v.id,
-            local_time.format("%Y-%m-%d %H:%M")
-        );
-    }
-}
-
-fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
-    let hint_fetch = "(run `ytq fetch`)";
+fn print_list_enriched(
+    queue: &[Video],
+    metadata: &HashMap<String, VideoMeta>,
+    show_fetch_hint: bool,
+) {
+    let hint_fetch = if show_fetch_hint {
+        "(run `ytq fetch`)"
+    } else {
+        "(metadata not cached)"
+    };
     let hint_unavailable = "(unavailable - consider `ytq rm`)";
 
     // Compute dynamic column widths based on content
@@ -199,21 +236,21 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
         .iter()
         .map(|v| match metadata.get(&v.id) {
             Some(m) if m.unavailable => hint_unavailable.len(),
-            Some(m) => m.title.chars().count(),
+            Some(m) => m.title.width(),
             None => hint_fetch.len(),
         })
         .max()
         .unwrap_or(5)
-        .min(50); // cap at 50 chars
+        .clamp(5, 50);
 
     let channel_width = queue
         .iter()
         .filter_map(|v| metadata.get(&v.id))
         .filter(|m| !m.unavailable)
-        .map(|m| m.channel.chars().count())
+        .map(|m| m.channel.width())
         .max()
         .unwrap_or(7)
-        .min(25); // cap at 25 chars
+        .clamp(7, 25);
 
     // Header
     outln!(
@@ -246,20 +283,18 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
                 );
             }
             Some(meta) => {
-                let title = truncate(&meta.title, title_width);
-                let channel = truncate(&meta.channel, channel_width);
+                let title = table_cell(&meta.title, title_width);
+                let channel = table_cell(&meta.channel, channel_width);
                 let duration = youtube_api::format_duration(meta.duration_seconds);
 
                 outln!(
-                    "  {:<4} {:<13} {:<title_w$}  {:<chan_w$}  {:<8}  {}",
+                    "  {:<4} {:<13} {}  {}  {:<8}  {}",
                     i + 1,
                     v.id,
                     title,
                     channel,
                     duration,
                     added,
-                    title_w = title_width,
-                    chan_w = channel_width,
                 );
             }
             None => {
@@ -279,14 +314,22 @@ fn print_list_online(queue: &[Video], metadata: &HashMap<String, VideoMeta>) {
     }
 }
 
-/// Truncates a string to a maximum character width, appending "..." if truncated.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+/// Truncate and pad in terminal columns, rather than Unicode character counts.
+fn table_cell(s: &str, width: usize) -> String {
+    let mut text = if s.width() <= width {
         s.to_string()
     } else {
-        let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    }
+        let budget = width.saturating_sub(3);
+        let end = s
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|end| s[..*end].width() <= budget)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
+    };
+    text.push_str(&" ".repeat(width.saturating_sub(text.width())));
+    text
 }
 
 pub fn peek(n: usize) -> Result<()> {
@@ -294,13 +337,8 @@ pub fn peek(n: usize) -> Result<()> {
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
 
-    let metadata = if !cfg.offline {
-        db.load_all_metadata()?
-    } else {
-        HashMap::new()
-    };
-
     let slice = db.peek_videos(n, &cfg.mode)?;
+    let metadata = db.load_metadata_for(&slice)?;
     if slice.is_empty() {
         outln!("{}", "Queue is empty.".yellow());
         return Ok(());
@@ -308,12 +346,7 @@ pub fn peek(n: usize) -> Result<()> {
 
     let actual = slice.len();
     outln!("Next {actual} video(s) ({:?} mode):", cfg.mode);
-
-    if cfg.offline {
-        print_list_offline(&slice);
-    } else {
-        print_list_online(&slice, &metadata);
-    }
+    print_list_enriched(&slice, &metadata, !cfg.offline);
     Ok(())
 }
 
@@ -717,14 +750,15 @@ fn collect_ids_for_scope(
     Ok(ids)
 }
 
-pub fn random() -> Result<()> {
+pub fn random(selection: &SelectionArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths.db_file)?;
-
-    let video = db.take_random()?;
+    let categories = store::load_categories(&paths.categories_file)?;
+    let selection = selection.resolve(None, &categories)?;
+    let video = db.take_matching(&selection, SelectionOrder::Random, None)?;
 
     let Some(removed) = video else {
-        outln!("{}", "Queue is empty.".yellow());
+        print_no_matches(&db)?;
         return Ok(());
     };
 

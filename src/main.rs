@@ -3,6 +3,7 @@ mod db;
 mod models;
 mod output;
 mod paths;
+mod selection;
 mod stats;
 mod store;
 mod youtube;
@@ -30,7 +31,7 @@ enum Commands {
         input: String,
     },
 
-    /// Watch the next video and remove it from the queue
+    /// Open the next matching video and remove it from the queue
     #[command(
         alias = "n",
         alias = "p",
@@ -43,13 +44,33 @@ enum Commands {
     Next {
         /// Video ID or URL to open a specific video (uses queue/stack mode if omitted)
         target: Option<String>,
+
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
+    },
+
+    /// Search queued video IDs, cached titles, and channel names without network access
+    Search {
+        /// Literal case-insensitive substring; omit to browse using filters
+        query: Option<String>,
+
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
+
+        /// Maximum results to display
+        #[arg(long, default_value = "20", conflicts_with = "all")]
+        limit: NonZeroUsize,
+
+        /// Display every matching video
+        #[arg(long)]
+        all: bool,
     },
 
     /// List the current queue
     #[command(alias = "l", alias = "ls")]
     List,
 
-    /// Look at the next few videos without watching
+    /// Look at the next few videos without opening them
     #[command(alias = "k")]
     Peek {
         /// How many videos to show
@@ -161,9 +182,12 @@ enum Commands {
         refresh_categories: bool,
     },
 
-    /// Pop and watch a random video from the queue
+    /// Open a random matching video and remove it from the queue
     #[command(alias = "r", alias = "lucky")]
-    Random,
+    Random {
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
+    },
 }
 
 fn main() {
@@ -178,7 +202,13 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Add { input } => commands::add(&input),
-        Commands::Next { target } => commands::next(target.as_deref()),
+        Commands::Next { target, selection } => commands::next(target.as_deref(), &selection),
+        Commands::Search {
+            query,
+            selection,
+            limit,
+            all,
+        } => commands::search(query.as_deref(), &selection, (!all).then_some(limit.get())),
         Commands::List => commands::list(),
         Commands::Peek { n } => commands::peek(n.get()),
         Commands::Remove { target } => commands::remove(&target),
@@ -210,7 +240,7 @@ fn run() -> Result<()> {
             force,
             refresh_categories,
         ),
-        Commands::Random => commands::random(),
+        Commands::Random { selection } => commands::random(&selection),
     }
 }
 

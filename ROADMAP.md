@@ -232,11 +232,43 @@ Queue and metadata storage migrated from JSON files to a single SQLite database 
 
 ---
 
+## Search and Constrained Selection
+
+Prioritize finding and selecting videos from a large personal library, rather
+than treating the entire collection as a backlog to finish. All matching uses
+local cached metadata and never triggers a network request.
+
+- [x] Search queued videos by literal, case-insensitive title, channel, or ID
+- [x] Share `--category`, `--channel`, and `--max-duration` filters across search,
+      `next`/`play`/`watch`/`open`, and `random`
+- [x] Resolve YouTube categories by cached name or ID, with unambiguous partial
+      names such as `tech` for Science & Technology
+- [x] Accept time budgets such as `10m`, `30m`, and `1h`; match videos at or below
+      the limit and exclude unknown/zero durations when constrained
+- [x] Preserve queue/stack ordering among matching videos for `next`; sample
+      uniformly among matches for `random`; never remove nonmatching videos
+- [x] Bound search output by default, with `--limit` and `--all` options
+- [x] Display cached metadata even when offline
+- [ ] Add age constraints and a non-destructive `pick --count N` shortlist
+- [ ] Explore a lightweight pinned/up-next list without duplicating the library
+- [ ] Add history lookup, explicit reopen, undo, and timestamp bookmarks
+- [ ] Provide structured JSON results and stdin batch addition for companion tools
+- [ ] Record optional addition source, batch ID, and selection method
+
+Example workflows:
+
+```bash
+ytq search "rust"
+ytq search --category tech --max-duration 10m
+ytq random --category tech --max-duration 30m
+ytq play --category tech --max-duration 30m
+```
+
 ## Future Considerations
 
 Ideas that may be explored later:
 
-- Fuzzy search within queue (by ID, or title/channel when metadata available)
+- Fuzzy relevance ranking beyond the literal search described above
 - Paginated list output — Show first 100 videos by default, with `--limit N` and `--all` flags
 - Exponential backoff for YouTube API rate limits
 - Additional metadata sources that don't require an API key

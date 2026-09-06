@@ -84,6 +84,274 @@ fn video_url(id: &str) -> String {
     format!("https://www.youtube.com/watch?v={id}")
 }
 
+fn searchable_queue(env: &TestEnv) {
+    for id in [
+        "aaaaaaaaaa1",
+        "bbbbbbbbbb2",
+        "cccccccccc3",
+        "dddddddddd4",
+        "eeeeeeeeee5",
+    ] {
+        env.ok(&["add", id]);
+    }
+    let db = rusqlite::Connection::open(env.data_dir().join("ytq.db")).unwrap();
+    for (id, title, channel, category, seconds) in [
+        (
+            "aaaaaaaaaa1",
+            "Rust in ten minutes",
+            "École Tech",
+            "28",
+            600,
+        ),
+        ("bbbbbbbbbb2", "Rust deep dive", "Tech Talks", "28", 1801),
+        ("cccccccccc3", "A music lesson", "Music School", "10", 300),
+        (
+            "dddddddddd4",
+            "Rust in thirty minutes",
+            "Tech Talks",
+            "28",
+            1800,
+        ),
+    ] {
+        db.execute(
+            "INSERT INTO metadata (id, title, channel, channel_id, duration, duration_seconds,
+             published_at, category_id, tags, fetched_at, unavailable)
+             VALUES (?1, ?2, ?3, 'UCtest', '', ?4, '2026-01-01T00:00:00Z', ?5, '[]', '2026-01-01T00:00:00Z', 0)",
+            rusqlite::params![id, title, channel, seconds, category],
+        ).unwrap();
+    }
+    fs::write(
+        env.data_dir().join("categories.json"),
+        r#"{"28":"Science & Technology","10":"Music","24":"Entertainment"}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn search_uses_cached_titles_channels_and_ids_even_offline() {
+    let env = TestEnv::new("search");
+    searchable_queue(&env);
+    let output = env.ok(&["search", "RUST"]);
+    assert!(output.contains("3 matching video(s)"), "{output}");
+    assert!(output.contains("Rust in ten minutes"), "{output}");
+    assert!(!output.contains("A music lesson"), "{output}");
+    assert!(env.ok(&["search", "ÉCOLE"]).contains("aaaaaaaaaa1"));
+    assert!(
+        env.ok(&["search", "eeeeeeeeee5"])
+            .contains("metadata not cached")
+    );
+    assert!(env.ok(&["list"]).contains("Rust in ten minutes"));
+    assert!(env.ok(&["peek"]).contains("Rust in ten minutes"));
+    assert!(
+        env.ok(&["search", "not present"])
+            .contains("No matching videos")
+    );
+    assert!(env.ok(&["list"]).contains("5 videos in queue"));
+    assert!(!output.contains("run `ytq fetch`"));
+}
+
+#[test]
+fn cached_titles_use_terminal_width_for_column_alignment() {
+    use unicode_width::UnicodeWidthStr;
+    let env = TestEnv::new("search-width");
+    searchable_queue(&env);
+    let db = rusqlite::Connection::open(env.data_dir().join("ytq.db")).unwrap();
+    db.execute(
+        "UPDATE metadata SET title = ?1, channel = 'Marker Channel' WHERE id = 'aaaaaaaaaa1'",
+        [format!("⚡️ Rust {}", "界".repeat(40))],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE metadata SET title = 'Rust', channel = 'Marker Channel' WHERE id = 'dddddddddd4'",
+        [],
+    )
+    .unwrap();
+    let output = env.ok(&["search", "rust", "--max-duration", "30m"]);
+    let columns: Vec<_> = output
+        .lines()
+        .filter_map(|line| {
+            line.find("Marker Channel")
+                .map(|index| line[..index].width())
+        })
+        .collect();
+    assert_eq!(columns.len(), 2, "{output}");
+    assert_eq!(columns[0], columns[1], "{output}");
+}
+
+#[test]
+fn search_combines_filters_and_respects_limits_and_stack_order() {
+    let env = TestEnv::new("search-filters");
+    searchable_queue(&env);
+    let output = env.ok(&[
+        "search",
+        "rust",
+        "--category",
+        "tech",
+        "--max-duration",
+        "30m",
+    ]);
+    assert!(output.contains("2 matching video(s)"), "{output}");
+    assert!(output.find("aaaaaaaaaa1").unwrap() < output.find("dddddddddd4").unwrap());
+    assert!(!output.contains("bbbbbbbbbb2"));
+    env.ok(&["config", "mode", "stack"]);
+    let output = env.ok(&[
+        "search",
+        "--category",
+        "28",
+        "--max-duration",
+        "30m",
+        "--limit",
+        "1",
+    ]);
+    assert!(output.contains("dddddddddd4"), "{output}");
+    assert!(!output.contains("aaaaaaaaaa1"));
+    assert!(output.contains("More matches available"));
+    let all = env.ok(&["search", "--all"]);
+    assert!(all.contains("5 matching video(s)"), "{all}");
+    assert!(!all.contains("More matches available"));
+    let channel = env.ok(&["search", "--channel", "ÉCOLE", "--max-duration", "10m"]);
+    assert!(channel.contains("1 matching video(s)"), "{channel}");
+    assert!(channel.contains("aaaaaaaaaa1"));
+}
+
+#[test]
+fn selection_rejects_invalid_filters_and_never_pops_nonmatches() {
+    let env = TestEnv::new("selection-invalid");
+    searchable_queue(&env);
+    for command in ["search", "random", "play"] {
+        assert!(
+            env.err(&[command, "--max-duration", "0m"])
+                .contains("positive")
+        );
+        assert!(
+            env.err(&[command, "--category", "unknown"])
+                .contains("unknown category")
+        );
+        assert!(
+            env.err(&[command, "--category", "i"])
+                .contains("ambiguous category")
+        );
+        assert!(
+            env.ok(&[command, "--max-duration", "1s"])
+                .contains("No matching videos")
+        );
+    }
+    assert!(env.err(&["search", " "]).contains("must not be empty"));
+    assert!(
+        env.err(&["search", "--channel", " "])
+            .contains("must not be empty")
+    );
+    assert!(env.err(&["search", "--limit", "0"]).contains("error:"));
+    assert!(
+        env.err(&["search", "--all", "--limit", "1"])
+            .contains("cannot be used")
+    );
+    let missing = env.err(&["play", "fffffffffff"]);
+    assert!(missing.contains("not found in queue"), "{missing}");
+    assert!(!missing.contains("filters"), "{missing}");
+    assert!(
+        env.err(&["play", "bbbbbbbbbb2", "--max-duration", "30m"])
+            .contains("does not match filters")
+    );
+    assert!(env.ok(&["list"]).contains("5 videos in queue"));
+    assert!(
+        env.ok(&["stats", "--all"])
+            .contains("Viewing Sessions:      0")
+    );
+}
+
+// Linux's open crate invokes launchers through PATH. Replace all launchers so
+// the real CLI can exercise successful/failed launches without opening a browser.
+// macOS uses an absolute /usr/bin/open path, so it cannot use this fixture.
+#[cfg(target_os = "linux")]
+fn browser_command(env: &TestEnv, success: bool) -> Command {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for launcher in ["xdg-open", "gio", "gnome-open", "kde-open"] {
+        let path = bin.join(launcher);
+        fs::write(
+            &path,
+            if success {
+                "#!/bin/sh\nexit 0\n"
+            } else {
+                "#!/bin/sh\nexit 1\n"
+            },
+        )
+        .unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut command = env.command();
+    command.env("PATH", bin);
+    command
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filtered_play_and_random_open_only_matches_and_record_history() {
+    let env = TestEnv::new("filtered-open");
+    searchable_queue(&env);
+    for (command, expected) in [("play", "aaaaaaaaaa1"), ("random", "dddddddddd4")] {
+        let output = browser_command(&env, true)
+            .args([command, "--category", "tech", "--max-duration", "30m"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+    }
+    assert!(env.ok(&["list"]).contains("3 videos in queue"));
+    assert!(
+        env.ok(&["stats", "--all"])
+            .contains("Viewing Sessions:      2")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filtered_stack_play_restores_original_position_after_failed_launch() {
+    let env = TestEnv::new("filtered-restore");
+    searchable_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    let before = env.ok(&["list"]);
+    let output = browser_command(&env, false)
+        .args(["next", "--category", "tech", "--max-duration", "30m"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dddddddddd4"));
+    assert_eq!(env.ok(&["list"]), before);
+    assert!(
+        env.ok(&["stats", "--all"])
+            .contains("Viewing Sessions:      0")
+    );
+    let output = browser_command(&env, true)
+        .args(["watch", "--category", "tech", "--max-duration", "30m"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dddddddddd4"));
+}
+
+#[test]
+fn list_peek_and_search_use_the_same_table_without_cached_metadata() {
+    let env = TestEnv::new("uncached-table");
+    env.ok(&["add", "dQw4w9WgXcQ"]);
+
+    for output in [
+        env.ok(&["list"]),
+        env.ok(&["peek"]),
+        env.ok(&["search", "dQw4w9WgXcQ"]),
+    ] {
+        assert!(output.contains("Title"), "{output}");
+        assert!(output.contains("Channel"), "{output}");
+        assert!(output.contains("metadata not cached"), "{output}");
+    }
+}
+
 #[test]
 fn add_then_list_shows_the_video() {
     let env = TestEnv::new("add-list");

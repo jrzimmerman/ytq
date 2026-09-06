@@ -3,10 +3,40 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::models::{Mode, Video, VideoMeta};
+use crate::selection::Selection;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, named_params, params};
+
+pub enum SelectionOrder {
+    Queue,
+    Stack,
+    Random,
+}
+
+impl SelectionOrder {
+    fn sql(&self) -> &'static str {
+        match self {
+            Self::Queue => "q.position ASC",
+            Self::Stack => "q.position DESC",
+            Self::Random => "RANDOM()",
+        }
+    }
+}
+
+// Literal substring matching: %, _ and quotes are data, not SQL patterns.
+const SELECTION_WHERE: &str = "
+    (:target IS NULL OR q.id = :target)
+    AND (:query IS NULL OR instr(ytq_lower(q.id), :query) > 0
+         OR (m.unavailable = 0 AND (
+             instr(ytq_lower(m.title), :query) > 0
+             OR instr(ytq_lower(m.channel), :query) > 0)))
+    AND (:category IS NULL OR (m.unavailable = 0 AND m.category_id = :category))
+    AND (:channel IS NULL OR (m.unavailable = 0 AND instr(ytq_lower(m.channel), :channel) > 0))
+    AND (:duration IS NULL OR (m.unavailable = 0 AND m.duration_seconds > 0
+         AND m.duration_seconds <= :duration))
+";
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -74,6 +104,12 @@ impl Db {
     }
 
     fn init_schema(&self) -> Result<()> {
+        self.conn.create_scalar_function(
+            "ytq_lower",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|s| s.to_lowercase())),
+        )?;
         self.conn
             .execute_batch(SCHEMA_SQL)
             .context("failed to initialize database schema")?;
@@ -107,34 +143,14 @@ impl Db {
         Ok(self.take_back()?.map(|removed| removed.video))
     }
 
+    #[cfg(test)]
     pub fn take_front(&self) -> Result<Option<RemovedVideo>> {
-        self.take_by_extreme(true)
+        self.take_matching(&Selection::default(), SelectionOrder::Queue, None)
     }
 
+    #[cfg(test)]
     pub fn take_back(&self) -> Result<Option<RemovedVideo>> {
-        self.take_by_extreme(false)
-    }
-
-    fn take_by_extreme(&self, front: bool) -> Result<Option<RemovedVideo>> {
-        let order = if front { "ASC" } else { "DESC" };
-        let sql = format!(
-            "DELETE FROM queue WHERE id = (SELECT id FROM queue ORDER BY position {order} LIMIT 1) \
-             RETURNING id, url, added_at, position"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let video = stmt
-            .query_row([], |row| {
-                Ok(RemovedVideo {
-                    video: Video {
-                        id: row.get(0)?,
-                        url: row.get(1)?,
-                        added_at: row.get(2)?,
-                    },
-                    position: row.get(3)?,
-                })
-            })
-            .optional()?;
-        Ok(video)
+        self.take_matching(&Selection::default(), SelectionOrder::Stack, None)
     }
 
     /// Removes and returns a random video from the queue.
@@ -143,24 +159,9 @@ impl Db {
         Ok(self.take_random()?.map(|removed| removed.video))
     }
 
+    #[cfg(test)]
     pub fn take_random(&self) -> Result<Option<RemovedVideo>> {
-        let mut stmt = self.conn.prepare(
-            "DELETE FROM queue WHERE id = (SELECT id FROM queue ORDER BY RANDOM() LIMIT 1) \
-             RETURNING id, url, added_at, position",
-        )?;
-        let video = stmt
-            .query_row([], |row| {
-                Ok(RemovedVideo {
-                    video: Video {
-                        id: row.get(0)?,
-                        url: row.get(1)?,
-                        added_at: row.get(2)?,
-                    },
-                    position: row.get(3)?,
-                })
-            })
-            .optional()?;
-        Ok(video)
+        self.take_matching(&Selection::default(), SelectionOrder::Random, None)
     }
 
     /// Removes the video with the given id and returns it. Returns Ok(None) when
@@ -209,6 +210,86 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Search is read-only and returns matching videos in configured queue order.
+    pub fn search_videos(
+        &self,
+        selection: &Selection,
+        order: SelectionOrder,
+        limit: Option<usize>,
+    ) -> Result<Vec<Video>> {
+        let limit = limit
+            .map(i64::try_from)
+            .transpose()
+            .context("search limit is too large")?
+            .unwrap_or(-1);
+        let sql = format!(
+            "SELECT q.id, q.url, q.added_at FROM queue q
+             LEFT JOIN metadata m ON m.id = q.id
+             WHERE {SELECTION_WHERE} ORDER BY {} LIMIT :limit",
+            order.sql()
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            named_params! {
+                ":target": Option::<&str>::None,
+                ":query": selection.query,
+                ":category": selection.category_id,
+                ":channel": selection.channel,
+                ":duration": selection.max_duration,
+                ":limit": limit,
+            },
+            |row| {
+                Ok(Video {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    added_at: row.get(2)?,
+                })
+            },
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Choose and remove a matching video in one statement, so concurrent commands
+    /// cannot open the same queue row. Nonmatching rows keep their positions.
+    pub fn take_matching(
+        &self,
+        selection: &Selection,
+        order: SelectionOrder,
+        target: Option<&str>,
+    ) -> Result<Option<RemovedVideo>> {
+        let sql = format!(
+            "DELETE FROM queue WHERE id = (
+                SELECT q.id FROM queue q LEFT JOIN metadata m ON m.id = q.id
+                WHERE {SELECTION_WHERE} ORDER BY {} LIMIT 1
+             ) RETURNING id, url, added_at, position",
+            order.sql()
+        );
+        self.conn
+            .query_row(
+                &sql,
+                named_params! {
+                    ":target": target,
+                    ":query": selection.query,
+                    ":category": selection.category_id,
+                    ":channel": selection.channel,
+                    ":duration": selection.max_duration,
+                },
+                |row| {
+                    Ok(RemovedVideo {
+                        video: Video {
+                            id: row.get(0)?,
+                            url: row.get(1)?,
+                            added_at: row.get(2)?,
+                        },
+                        position: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Lists all videos in FIFO order (oldest first).
@@ -335,6 +416,20 @@ impl Db {
         Ok(out)
     }
 
+    /// Load only the metadata needed for a displayed page, not the full library.
+    pub fn load_metadata_for(&self, videos: &[Video]) -> Result<HashMap<String, VideoMeta>> {
+        let ids = serde_json::to_string(&videos.iter().map(|v| &v.id).collect::<Vec<_>>())?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, channel, channel_id, duration, duration_seconds,
+             published_at, category_id, tags, fetched_at, unavailable FROM metadata
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let rows = stmt.query_map([ids], row_to_meta)?;
+        rows.map(|row| row.map(|meta| (meta.id.clone(), meta)))
+            .collect::<rusqlite::Result<HashMap<_, _>>>()
+            .map_err(Into::into)
+    }
+
     /// Total metadata row count.
     pub fn metadata_len(&self) -> Result<usize> {
         let n: i64 = self
@@ -424,6 +519,111 @@ mod tests {
             fetched_at: Utc::now(),
             unavailable: false,
         }
+    }
+
+    #[test]
+    fn constrained_selection_preserves_nonmatches_and_queue_order() {
+        for order in [
+            SelectionOrder::Queue,
+            SelectionOrder::Stack,
+            SelectionOrder::Random,
+        ] {
+            let db = Db::open_in_memory().unwrap();
+            for id in [
+                "missing0001",
+                "long0000001",
+                "match000001",
+                "other000001",
+                "match000002",
+                "zero0000001",
+                "gone0000001",
+            ] {
+                db.add_video(&sample_video(id)).unwrap();
+                if id != "missing0001" {
+                    let mut meta = sample_meta(id, "Tech Channel");
+                    meta.category_id = if id == "other000001" { "10" } else { "28" }.into();
+                    meta.duration_seconds = match id {
+                        "long0000001" => 1801,
+                        "zero0000001" => 0,
+                        _ => 1800,
+                    };
+                    meta.unavailable = id == "gone0000001";
+                    db.upsert_metadata_batch(&[meta]).unwrap();
+                }
+            }
+            let selection = Selection {
+                category_id: Some("28".into()),
+                channel: Some("tech".into()),
+                max_duration: Some(1800),
+                ..Selection::default()
+            };
+            assert!(
+                db.take_matching(&selection, SelectionOrder::Queue, Some("long0000001"))
+                    .unwrap()
+                    .is_none()
+            );
+            let expected = match order {
+                SelectionOrder::Queue => Some("match000001"),
+                SelectionOrder::Stack => Some("match000002"),
+                SelectionOrder::Random => None,
+            };
+            let removed = db.take_matching(&selection, order, None).unwrap().unwrap();
+            if let Some(expected) = expected {
+                assert_eq!(removed.video.id, expected);
+            }
+            assert!(["match000001", "match000002"].contains(&removed.video.id.as_str()));
+            let remaining = db
+                .take_matching(&selection, SelectionOrder::Random, None)
+                .unwrap()
+                .unwrap();
+            assert_ne!(remaining.video.id, removed.video.id);
+            assert!(
+                db.take_matching(&selection, SelectionOrder::Queue, None)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                db.list_videos()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.id.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "missing0001",
+                    "long0000001",
+                    "other000001",
+                    "zero0000001",
+                    "gone0000001"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn search_matches_literal_unicode_text_and_ids_without_metadata() {
+        let db = Db::open_in_memory().unwrap();
+        db.add_video(&sample_video("abcdefghij1")).unwrap();
+        db.add_video(&sample_video("abcdefghij2")).unwrap();
+        let mut meta = sample_meta("abcdefghij1", "ÉCOLE Tech");
+        meta.title = "Rust: 100%_safe's guide".into();
+        db.upsert_metadata_batch(&[meta]).unwrap();
+        for query in ["école", "rust", "%_safe's", "abcdefghij2"] {
+            let selection = Selection {
+                query: Some(query.into()),
+                ..Selection::default()
+            };
+            let matches = db
+                .search_videos(&selection, SelectionOrder::Queue, None)
+                .unwrap();
+            assert_eq!(matches.len(), 1, "{query}");
+        }
+        assert_eq!(
+            db.search_videos(&Selection::default(), SelectionOrder::Stack, Some(1))
+                .unwrap()[0]
+                .id,
+            "abcdefghij2"
+        );
+        assert_eq!(db.queue_len().unwrap(), 2);
     }
 
     #[test]
