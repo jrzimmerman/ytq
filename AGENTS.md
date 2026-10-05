@@ -25,7 +25,6 @@ cargo test --locked --all-targets --all-features
 
 ## Testing Notes
 
-- Unit tests live in `#[cfg(test)] mod tests` blocks at the bottom of each file.
 - End-to-end tests live in `tests/cli.rs` and run the real binary via `CARGO_BIN_EXE_ytq`.
   Everything in `commands.rs` resolves its own paths and prints its own output, so that
   is the only place it can be covered. Add coverage there when changing command behavior.
@@ -34,10 +33,6 @@ cargo test --locked --all-targets --all-features
 - Cover both success and failure paths when editing parsing, stats, or persistence logic.
 
 ## Code Style Overview
-
-Follow existing patterns in the repo rather than introducing a new style.
-Always use `cargo fmt`; do not manually preserve line wrapping that `rustfmt`
-wants to change.
 
 ### Imports
 
@@ -55,7 +50,7 @@ use std::sync::LazyLock;
 use crate::models::{Config, Event, Video};
 use crate::{paths, store};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use regex::Regex;
 ```
 
@@ -69,8 +64,6 @@ Let `cargo fmt` handle intra-group ordering.
 
 ### Error Handling
 
-- Use `anyhow::Result<T>` for fallible functions, `bail!(...)` for early
-  user-facing failures, and `?` to propagate.
 - Add context with `.context(...)` or `.with_context(...)` around I/O and parsing
   that can fail opaquely.
 - Start messages lowercase and without trailing punctuation. They are rendered as
@@ -81,11 +74,7 @@ Let `cargo fmt` handle intra-group ordering.
 
 ### CLI and Command Flow
 
-- CLI definitions use `clap` derive macros in `src/main.rs`.
-- Help text is usually written as doc comments on enum variants and fields.
 - Aliases and visible aliases are common; preserve existing command ergonomics.
-- `main()` prints colored errors and exits non-zero; command logic lives in `run()`
-  and `src/commands.rs`.
 
 ### Printing
 
@@ -99,8 +88,7 @@ Let `cargo fmt` handle intra-group ordering.
 
 - Queue and metadata mutations go through the `Db` struct in `src/db.rs`.
 - Open one `Db` per command via `Db::open(&paths.db_file)`.
-- Concurrency is handled by SQLite WAL mode (no file locking layer).
-- Config and categories are still JSON; history is append-only monthly JSONL.
+- Concurrency is handled by SQLite WAL mode; do not add a separate file-locking layer.
 - Persistence helpers (for non-DB files) return defaults instead of failing on missing files.
 - JSON files are written through `store::write_atomic` (temp file + rename), never `fs::write`.
   `config.json` is written owner-only because it can hold an API key.
@@ -116,7 +104,6 @@ Let `cargo fmt` handle intra-group ordering.
 
 ### Platform-Specific Code
 
-- `src/paths.rs` uses `#[cfg(target_os = "windows")]` and `#[cfg(not(target_os = "windows"))]`.
 - Continue using `etcetera` strategy selection rather than hand-rolled platform path logic.
 
 ### Stats and Time Handling
