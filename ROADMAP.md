@@ -74,7 +74,7 @@ API key can be configured via `ytq config youtube_api_key <key>` or the `YOUTUBE
 - [x] **Phase 3: Fetch Command**
   - [x] `ytq fetch` — fetch metadata for queue videos missing metadata
   - [x] `ytq fetch <id>` or `ytq fetch <id1>,<id2>` — fetch/refresh specific videos (force-refresh, bypasses diff)
-  - [x] Scope flags: `--queue` (default), `--history`, `--all`
+  - [x] Scope flags: `--queue` (default), `--history`
   - [x] `--limit N` flag for testing and quota management
   - [x] `--refresh-categories` flag to force category refresh
   - [x] Categories auto-fetched on first run, cached thereafter
@@ -134,7 +134,7 @@ All basic stats plus:
 ### Time Filtering
 
 - [x] `ytq stats` — Current-year statistics (default)
-- [x] `ytq stats --all` — All-time statistics
+- [x] `ytq stats --all-time` - All-time statistics
 - [x] `ytq stats --week` — Last 7 days
 - [x] `ytq stats --month` — Last 30 days
 - [x] `ytq stats --month 2026-01` — Specific month
@@ -247,7 +247,8 @@ local cached metadata and never triggers a network request.
       floors; exclude unknown/zero durations when constrained
 - [x] Preserve queue/stack ordering among matching videos for `next`; sample
       uniformly among matches for `random`; never remove nonmatching videos
-- [x] Bound search output by default, with `--limit` and `--all` options
+- [x] Bound search output by default, with `--limit` and `--all` options shared by
+      `list`, `peek`, and `search`
 - [x] Display cached metadata even when offline
 - [ ] Add age constraints and a non-destructive `pick --count N` shortlist
 - [ ] Explore a lightweight pinned/up-next list without duplicating the library
@@ -269,7 +270,7 @@ ytq play --category tech --max-duration 30m
 Ideas that may be explored later:
 
 - Fuzzy relevance ranking beyond the literal search described above
-- Paginated list output — Show first 100 videos by default, with `--limit N` and `--all` flags
+- Paginated list output - Show first 100 videos by default
 - Exponential backoff for YouTube API rate limits
 - Additional metadata sources that don't require an API key
 - Rewrite `stats` aggregations as SQL `GROUP BY` queries (currently materialize a HashMap from SQLite then aggregate in Rust)

@@ -75,11 +75,11 @@ ytq random
 | `ytq next [target]` | `n`, `p`, `w`, `o` | `play`, `watch`, `open` | Open & pop the next matching video. Supports category, channel, and duration filters. |
 | `ytq random` | `r` | `lucky` | Open & pop a random matching video. Supports the same filters as `next`. |
 | `ytq search [query]` | | | Search cached titles, channels, and IDs. Supports the same filters, `--limit N` (default 20), and `--all`. |
-| `ytq peek [n]` | `k` | | Look ahead. Show the next n videos (default: 1). Supports the same filters. |
-| `ytq list` | `l` | `ls` | List all. Shows the full queue, oldest first in either mode. Supports the same filters. |
+| `ytq peek [n]` | `k` | | Look ahead. Show the next n videos (default: 1). Supports the same filters, `--limit N`, and `--all`. |
+| `ytq list` | `l` | `ls` | List all. Shows the full queue, oldest first in either mode. Supports the same filters, `--limit N`, and `--all`. |
 | `ytq remove <target>` | `d` | `rm`, `delete` | Delete. Removes item by ID or URL matching. |
 | `ytq fetch [target]` | `f` | | Fetch video metadata from YouTube Data API v3. |
-| `ytq stats` | `s` | | Metrics. Shows current-year viewing statistics by default. Supports `--wrapped`, `--all`, `--week`, `--month`, `--year`, `--from`, `--to`. |
+| `ytq stats` | `s` | | Metrics. Shows current-year viewing statistics by default. Supports `--wrapped`, `--all-time`, `--week`, `--month`, `--year`, `--from`, `--to`. |
 | `ytq config <key> <value>` | `c` | | Settings. Keys: `mode`, `offline`, `youtube_api_key`. |
 | `ytq info` | `i` | | Debug. Prints the exact paths where your data is stored. |
 
@@ -135,14 +135,41 @@ All supplied filters must match. Missing/unavailable metadata cannot satisfy a
 metadata constraint, and zero/unknown durations cannot satisfy a time budget.
 The budget describes the video's full duration, not measured playback time.
 Duration flags decide which videos qualify. They are separate from result
-counts such as `peek 5` or `search --limit 5`, which apply after filtering.
+counts, which apply after filtering.
 Run `ytq fetch` explicitly to enrich missing metadata (requires online features).
 
-Search defaults to the first 20 matches in your configured queue/stack order;
-without a query it browses matching videos. `next` skips nonmatches without
+Without a query, search browses matching videos. `next` skips nonmatches without
 removing or reordering them. `random` samples uniformly among matching videos.
 A specific `next <target>` must also satisfy any supplied filters. If no video
 matches, nothing is opened or removed.
+
+### Result Counts
+
+`list`, `peek`, and `search` share the same count flags:
+
+| Flag | Behavior |
+|------|----------|
+| `--limit N` | Show at most N videos. Cannot be combined with `--all`. |
+| `--all` | Show every matching video, with no count cap. On `list`, which already shows everything, it deliberately does nothing, so scripts can pass it to any of the three. |
+
+Each command keeps its own default and order: `list` shows all, oldest first;
+`peek` shows 1 and `search` shows 20, both in your configured queue/stack order.
+`peek N` is shorthand for choosing the count, and cannot be combined with either
+flag.
+
+When `--limit` or `search`'s default cap hides results, a notice goes to stderr,
+so redirected output holds only the table. Bare `peek` and `peek N` stay silent,
+since seeing just the next few is what they are for. `list --limit N` keeps the
+full count in its header.
+
+### Exit Codes
+
+A flag, count, or query value that is wrong on its face, such as `--limit 0`,
+`peek 0`, `--max-duration 30`, `--channel ""`, `search ""`, or `--year 26`, exits
+with status 2, as does any other usage error such as combining `--limit` with
+`--all`. A failure that depends on saved state or on two flags together, such as
+an unknown `--category` or `--from` later than `--to`, exits with status 1, and so
+do malformed video IDs or URLs and bad config values.
 
 ## Configuration
 
@@ -192,7 +219,7 @@ When online features are enabled, the `fetch` command retrieves video metadata (
 # Fetch metadata for all queue videos missing metadata
 ytq fetch
 
-# Fetch with a limit (useful for testing)
+# Fetch with a limit (useful for testing); a note on stderr says how many were skipped
 ytq fetch --limit 5
 
 # Fetch for a specific video (force-refresh)
@@ -202,7 +229,7 @@ ytq fetch dQw4w9WgXcQ
 ytq fetch dQw4w9WgXcQ,jNQXAC9IVRw
 
 # Fetch for all videos (queue + history)
-ytq fetch --all
+ytq fetch --queue --history
 
 # Fetch for history videos only
 ytq fetch --history
@@ -233,7 +260,7 @@ ytq tracks your queue behavior and viewing patterns. The `stats` command shows a
 ytq stats
 
 # All-time overview
-ytq stats --all
+ytq stats --all-time
 
 # Full "wrapped" deep dive with charts and leaderboards
 ytq stats --wrapped
@@ -250,6 +277,13 @@ ytq stats --year 2025                     # Specific year
 ytq stats --from 2025-06-01 --to 2025-12-31  # Custom range
 ytq stats --wrapped --year 2025           # Combine with --wrapped
 ```
+
+Years need all four digits. Months and days can be unpadded, so `2026-1` and
+`2026-1-5` work.
+
+`ytq stats --all` and `ytq fetch --all` are deprecated spellings of
+`ytq stats --all-time` and `ytq fetch --queue --history`. They still work, with a
+warning on stderr.
 
 **Basic stats** (always available from the event log):
 - First-time additions and re-additions

@@ -205,10 +205,8 @@ fn search_combines_filters_and_respects_limits_and_stack_order() {
     ]);
     assert!(output.contains("dddddddddd4"), "{output}");
     assert!(!output.contains("aaaaaaaaaa1"));
-    assert!(output.contains("More matches available"));
     let all = env.ok(&["search", "--all"]);
     assert!(all.contains("5 matching video(s)"), "{all}");
-    assert!(!all.contains("More matches available"));
     let channel = env.ok(&["search", "--channel", "ÉCOLE", "--max-duration", "10m"]);
     assert!(channel.contains("1 matching video(s)"), "{channel}");
     assert!(channel.contains("aaaaaaaaaa1"));
@@ -255,7 +253,7 @@ fn selection_rejects_invalid_filters_and_never_pops_nonmatches() {
     );
     assert!(env.ok(&["list"]).contains("5 videos in queue"));
     assert!(
-        env.ok(&["stats", "--all"])
+        env.ok(&["stats", "--all-time"])
             .contains("Viewing Sessions:      0")
     );
 }
@@ -305,7 +303,7 @@ fn filtered_play_and_random_open_only_matches_and_record_history() {
     }
     assert!(env.ok(&["list"]).contains("3 videos in queue"));
     assert!(
-        env.ok(&["stats", "--all"])
+        env.ok(&["stats", "--all-time"])
             .contains("Viewing Sessions:      2")
     );
 }
@@ -325,7 +323,7 @@ fn filtered_stack_play_restores_original_position_after_failed_launch() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("dddddddddd4"));
     assert_eq!(env.ok(&["list"]), before);
     assert!(
-        env.ok(&["stats", "--all"])
+        env.ok(&["stats", "--all-time"])
             .contains("Viewing Sessions:      0")
     );
     let output = browser_command(&env, true)
@@ -522,7 +520,7 @@ fn filtered_list_and_peek_change_nothing_and_separate_no_match_from_empty() {
     let env = TestEnv::new("filtered-read-only");
     searchable_queue(&env);
     let before = env.ok(&["list"]);
-    let stats_before = env.ok(&["stats", "--all"]);
+    let stats_before = env.ok(&["stats", "--all-time"]);
 
     for args in [
         vec!["list", "--max-duration", "1s"],
@@ -536,7 +534,7 @@ fn filtered_list_and_peek_change_nothing_and_separate_no_match_from_empty() {
     env.ok(&["list", "--max-duration", "30m"]);
     env.ok(&["peek", "3", "--max-duration", "30m"]);
     assert_eq!(env.ok(&["list"]), before);
-    assert_eq!(env.ok(&["stats", "--all"]), stats_before);
+    assert_eq!(env.ok(&["stats", "--all-time"]), stats_before);
 
     let empty = TestEnv::new("filtered-empty");
     for args in [
@@ -700,8 +698,13 @@ fn shared_filters_fail_identically_on_every_selector() {
         ),
         (
             vec!["--channel", " "],
-            1,
-            "error: channel must not be empty",
+            2,
+            "error: invalid value ' ' for '--channel <CHANNEL>': must not be empty",
+        ),
+        (
+            vec!["--category", " "],
+            2,
+            "error: invalid value ' ' for '--category <CATEGORY>': must not be empty",
         ),
         (
             vec!["--min-duration", "31m", "--max-duration", "30m"],
@@ -721,6 +724,432 @@ fn shared_filters_fail_identically_on_every_selector() {
         }
     }
     assert_eq!(populated.ok(&["list"]), before);
+}
+
+const COUNT_ERROR: &str = "expected a whole number from 1 to 9223372036854775807";
+
+// `--limit` and `peek [n]` share one parser, so a bad count fails the same way
+// everywhere, including on `fetch`, and before any saved state is read.
+#[test]
+fn bad_counts_fail_identically_on_every_command_with_a_count() {
+    let env = TestEnv::new("matrix-counts");
+    searchable_queue(&env);
+    let before = env.ok(&["list"]);
+
+    for value in [
+        "0",
+        "abc",
+        "1.5",
+        "",
+        "9223372036854775808",
+        "18446744073709551615",
+        "18446744073709551616",
+    ] {
+        for (args, name) in [
+            (vec!["list", "--limit", value], "--limit <N>"),
+            (vec!["peek", "--limit", value], "--limit <N>"),
+            (vec!["search", "--limit", value], "--limit <N>"),
+            (vec!["fetch", "--limit", value], "--limit <N>"),
+            (vec!["peek", value], "[N]"),
+        ] {
+            let output = env.run(&args);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+            assert_eq!(
+                stderr.lines().next().unwrap(),
+                format!("error: invalid value '{value}' for '{name}': {COUNT_ERROR}"),
+                "{args:?}"
+            );
+            assert!(output.stdout.is_empty(), "{args:?}");
+        }
+    }
+    assert_eq!(env.ok(&["list"]), before);
+}
+
+#[test]
+fn the_largest_valid_count_works_on_every_command_with_a_count() {
+    let env = TestEnv::new("matrix-count-max");
+    searchable_queue(&env);
+    let max = "9223372036854775807";
+
+    for args in [
+        vec!["list", "--limit", max],
+        vec!["peek", "--limit", max],
+        vec!["search", "--limit", max],
+        vec!["peek", max],
+    ] {
+        let output = env.run(&args);
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(
+            table_ids(&String::from_utf8_lossy(&output.stdout)).len(),
+            5,
+            "{args:?}"
+        );
+        assert!(output.stderr.is_empty(), "{args:?}");
+    }
+    // It parses on `fetch` too, which then stops at the offline check.
+    assert!(
+        env.err(&["fetch", "--limit", max])
+            .contains("online features are disabled")
+    );
+}
+
+#[test]
+fn limit_all_and_the_peek_shorthand_are_mutually_exclusive() {
+    let env = TestEnv::new("matrix-count-conflicts");
+    searchable_queue(&env);
+
+    for args in [
+        vec!["list", "--all", "--limit", "1"],
+        vec!["peek", "--all", "--limit", "1"],
+        vec!["search", "--all", "--limit", "1"],
+        vec!["peek", "1", "--limit", "1"],
+        vec!["peek", "1", "--all"],
+    ] {
+        let output = env.run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("cannot be used with"), "{args:?}: {stderr}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn limit_and_all_select_the_same_rows_with_each_commands_own_default_and_order() {
+    let env = TestEnv::new("matrix-count-rows");
+    searchable_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    let newest = ["eeeeeeeeee5", "dddddddddd4"];
+    let oldest = ["aaaaaaaaaa1", "bbbbbbbbbb2"];
+
+    // `list` is always oldest first; the others follow the configured mode.
+    assert_eq!(table_ids(&env.ok(&["list", "--limit", "2"])), oldest);
+    assert_eq!(table_ids(&env.ok(&["peek", "--limit", "2"])), newest);
+    assert_eq!(table_ids(&env.ok(&["search", "--limit", "2"])), newest);
+
+    for args in [["list", "--all"], ["peek", "--all"], ["search", "--all"]] {
+        assert_eq!(table_ids(&env.ok(&args)).len(), 5, "{args:?}");
+    }
+
+    // Filters apply before the count on every command.
+    for base in ["list", "peek", "search"] {
+        let args = [base, "--channel", "talks", "--limit", "1"];
+        assert_eq!(table_ids(&env.ok(&args)).len(), 1, "{args:?}");
+    }
+
+    // Defaults stay per command: all, 1, and 20.
+    assert_eq!(table_ids(&env.ok(&["list"])).len(), 5);
+    assert_eq!(table_ids(&env.ok(&["peek"])).len(), 1);
+    for i in 0..20 {
+        env.ok(&["add", &format!("zzzzzzz{i:04}")]);
+    }
+    assert_eq!(table_ids(&env.ok(&["search"])).len(), 20);
+    assert_eq!(table_ids(&env.ok(&["list"])).len(), 25);
+}
+
+#[test]
+fn list_all_changes_nothing_and_list_limit_keeps_the_full_count_in_its_header() {
+    let env = TestEnv::new("list-count");
+    golden_queue(&env);
+    assert_eq!(
+        utc_stdout(&env, &["list", "--all"]),
+        utc_stdout(&env, &["list"])
+    );
+
+    let limited = env.ok(&["list", "--limit", "2"]);
+    assert_eq!(limited.lines().next().unwrap(), "6 videos in queue:");
+    assert_eq!(table_ids(&limited).len(), 2);
+
+    let limited = env.ok(&["list", "--limit", "1", "--channel", "talks"]);
+    assert_eq!(
+        limited.lines().next().unwrap(),
+        "2 of 6 videos in queue match:"
+    );
+    assert_eq!(table_ids(&limited).len(), 1);
+}
+
+const MORE_MATCHES: &str = "More matches available; use --limit N or --all.\n";
+
+// The notice goes to stderr whenever `--limit` or `search`'s default cap hides
+// rows, and never pollutes stdout, so `ytq search > file` holds only data.
+#[test]
+fn truncation_notices_go_to_stderr_only_when_a_cap_hides_rows() {
+    let env = TestEnv::new("matrix-notices");
+    searchable_queue(&env);
+
+    for (args, notice) in [
+        (vec!["list", "--limit", "2"], true),
+        (vec!["peek", "--limit", "2"], true),
+        (vec!["search", "--limit", "2"], true),
+        // Exactly enough rows hides nothing.
+        (vec!["list", "--limit", "5"], false),
+        (vec!["peek", "--limit", "5"], false),
+        (vec!["search", "--limit", "5"], false),
+        (vec!["list", "--all"], false),
+        (vec!["peek", "--all"], false),
+        (vec!["search", "--all"], false),
+        (vec!["list"], false),
+        // The queue is under `search`'s default cap.
+        (vec!["search"], false),
+        // Bare `peek` and `peek N` are for seeing just the next few.
+        (vec!["peek"], false),
+        (vec!["peek", "2"], false),
+    ] {
+        let output = env.run(&args);
+        assert!(output.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr, if notice { MORE_MATCHES } else { "" }, "{args:?}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("More matches"),
+            "{args:?}"
+        );
+    }
+
+    for i in 0..20 {
+        env.ok(&["add", &format!("zzzzzzz{i:04}")]);
+    }
+    let output = env.run(&["search"]);
+    assert_eq!(String::from_utf8_lossy(&output.stderr), MORE_MATCHES);
+    assert_eq!(
+        table_ids(&String::from_utf8_lossy(&output.stdout)).len(),
+        20
+    );
+    assert!(env.run(&["list"]).stderr.is_empty());
+    assert!(env.run(&["peek", "20"]).stderr.is_empty());
+}
+
+// The notice is printed before the first request. A dead proxy stops the run
+// there, which keeps this test off the network.
+#[test]
+fn fetch_limit_notes_how_many_videos_it_skipped() {
+    let env = TestEnv::new("fetch-notice");
+    searchable_queue(&env);
+    env.ok(&["config", "offline", "false"]);
+    let fetch = |args: &[&str]| {
+        env.command()
+            .arg("fetch")
+            .args(args)
+            .env("YOUTUBE_DATA_API_KEY", "test-key")
+            .env("HTTPS_PROXY", "http://127.0.0.1:1")
+            .env("ALL_PROXY", "http://127.0.0.1:1")
+            .output()
+            .unwrap()
+    };
+
+    // `searchable_queue` leaves one video uncached. This makes two.
+    env.ok(&["add", "ffffffffff6"]);
+    let output = fetch(&["--limit", "1"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Note: 1 more video(s) not fetched because of --limit."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("failed to reach YouTube Data API"),
+        "{stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("more video(s)"),
+        "notice must stay off stdout"
+    );
+
+    let output = fetch(&["--limit", "2"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("not fetched because of"), "{stderr}");
+    assert!(
+        stderr.contains("failed to reach YouTube Data API"),
+        "{stderr}"
+    );
+}
+
+// One rule for bad values: exit 2 when the value is wrong on its face, exit 1
+// when judging it takes saved state or two flags together.
+#[test]
+fn bad_values_follow_one_exit_code_rule() {
+    let env = TestEnv::new("matrix-exit-codes");
+    searchable_queue(&env);
+    let before = env.ok(&["list"]);
+    let month = "expected YYYY-MM with a four-digit year and a month from 1 to 12";
+    let year = "expected a four-digit year (YYYY)";
+    let date = "expected a real date as YYYY-MM-DD with a four-digit year";
+
+    let mut face_values: Vec<(Vec<&str>, String)> = vec![
+        (
+            vec!["search", " "],
+            "error: invalid value ' ' for '[QUERY]': must not be empty".to_string(),
+        ),
+        (
+            vec!["search", ""],
+            "error: invalid value '' for '[QUERY]': must not be empty".to_string(),
+        ),
+    ];
+    for value in ["abc", "26-01", "2026", "2026-13", "2026-0", "2026-001"] {
+        face_values.push((
+            vec!["stats", "--month", value],
+            format!("error: invalid value '{value}' for '--month [<YYYY-MM>]': {month}"),
+        ));
+    }
+    for value in ["abc", "26", "0", "20266"] {
+        face_values.push((
+            vec!["stats", "--year", value],
+            format!("error: invalid value '{value}' for '--year [<YYYY>]': {year}"),
+        ));
+    }
+    for flag in ["--from", "--to"] {
+        for value in ["nope", "26-01-01", "2026-01", "2026-02-30", ""] {
+            face_values.push((
+                vec!["stats", flag, value],
+                format!("error: invalid value '{value}' for '{flag} <DATE>': {date}"),
+            ));
+        }
+    }
+    face_values.push((
+        vec!["stats", "--month="],
+        format!("error: invalid value '' for '--month [<YYYY-MM>]': {month}"),
+    ));
+    face_values.push((
+        vec!["stats", "--year="],
+        format!("error: invalid value '' for '--year [<YYYY>]': {year}"),
+    ));
+
+    for (args, message) in &face_values {
+        let output = env.run(args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert_eq!(stderr.lines().next().unwrap(), message, "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+
+    for (args, message) in [
+        (
+            vec!["stats", "--from", "2026-06-01", "--to", "2026-01-01"],
+            "error: --from date must not be later than --to date",
+        ),
+        (
+            vec!["list", "--min-duration", "31m", "--max-duration", "30m"],
+            "error: minimum duration must not exceed maximum duration",
+        ),
+        (
+            vec!["list", "--category", "nosuch"],
+            "error: unknown category 'nosuch'; use a YouTube category ID or run `ytq fetch` to cache category names",
+        ),
+    ] {
+        let output = env.run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+        assert_eq!(stderr.lines().next().unwrap(), message, "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+
+    assert_eq!(env.ok(&["list"]), before);
+}
+
+#[test]
+fn stats_dates_accept_unpadded_parts_and_bare_rolling_periods() {
+    let env = TestEnv::new("stats-dates");
+
+    for (args, period) in [
+        (
+            vec!["stats", "--month", "2026-1"],
+            "2026-01-01 to 2026-01-31",
+        ),
+        (
+            vec!["stats", "--month", "2026-01"],
+            "2026-01-01 to 2026-01-31",
+        ),
+        (vec!["stats", "--year", "2025"], "2025-01-01 to 2025-12-31"),
+        (vec!["stats", "--from", "2026-1-5"], "Since 2026-01-05"),
+        (
+            vec!["stats", "--from", "2026-1-5", "--to", "2026-2-1"],
+            "2026-01-05 to 2026-02-01",
+        ),
+        (vec!["stats", "--month"], "Since"),
+        (vec!["stats", "--year"], "Since"),
+        (vec!["stats", "--month", "--wrapped"], "Since"),
+    ] {
+        let output = env.ok(&args);
+        assert!(output.contains(period), "{args:?}: {output}");
+    }
+}
+
+#[test]
+fn deprecated_all_flags_still_work_are_hidden_and_warn_on_stderr() {
+    let env = TestEnv::new("deprecated-all");
+    env.ok(&["add", "dQw4w9WgXcQ"]);
+
+    let old = env.run(&["stats", "--all"]);
+    let new = env.run(&["stats", "--all-time"]);
+    assert!(old.status.success());
+    assert_eq!(old.stdout, new.stdout);
+    assert!(String::from_utf8_lossy(&new.stdout).contains("All Time"));
+    assert!(new.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&old.stderr),
+        "Warning: `ytq stats --all` is deprecated; use `ytq stats --all-time`.\n"
+    );
+    let conflict = env.run(&["stats", "--all", "--week"]);
+    assert_eq!(conflict.status.code(), Some(2));
+    let conflict = env.run(&["stats", "--all-time", "--week"]);
+    assert_eq!(conflict.status.code(), Some(2));
+
+    let stats_help = env.ok(&["stats", "--help"]);
+    assert!(stats_help.contains("--all-time"), "{stats_help}");
+    assert!(!stats_help.contains("--all "), "{stats_help}");
+    assert!(!stats_help.contains("Deprecated"), "{stats_help}");
+
+    // `fetch --all` still parses, warns, and reaches the same offline check.
+    let stderr = env.err(&["fetch", "--all"]);
+    assert_eq!(
+        stderr.lines().next().unwrap(),
+        "Warning: `ytq fetch --all` is deprecated; use `ytq fetch --queue --history`."
+    );
+    assert!(stderr.contains("online features are disabled"), "{stderr}");
+    assert!(
+        env.err(&["fetch", "--queue", "--history"])
+            .starts_with("error: online features are disabled")
+    );
+    assert_eq!(
+        env.run(&["fetch", "dQw4w9WgXcQ", "--all"]).status.code(),
+        Some(2)
+    );
+    let fetch_help = env.ok(&["fetch", "--help"]);
+    assert!(!fetch_help.contains("--all"), "{fetch_help}");
+    assert!(!fetch_help.contains("Deprecated"), "{fetch_help}");
+}
+
+// `fetch --all` must keep fetching queue plus history, not just the queue.
+#[test]
+fn deprecated_fetch_all_covers_the_same_videos_as_queue_and_history() {
+    let env = TestEnv::new("fetch-all-scope");
+    env.ok(&["add", "aaaaaaaaaa1"]);
+    env.ok(&["add", "bbbbbbbbbb2"]);
+    env.ok(&["remove", "bbbbbbbbbb2"]);
+    env.ok(&["config", "offline", "false"]);
+    fs::write(env.data_dir().join("categories.json"), "{}").unwrap();
+
+    let fetch_count = |args: &[&str]| {
+        let output = env
+            .command()
+            .arg("fetch")
+            .args(args)
+            .env("YOUTUBE_DATA_API_KEY", "test-key")
+            .env("HTTPS_PROXY", "http://127.0.0.1:1")
+            .env("ALL_PROXY", "http://127.0.0.1:1")
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "the dead proxy must stop {args:?}"
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let both = "Fetching metadata for 2 video(s)...\n";
+    let queue_only = "Fetching metadata for 1 video(s)...\n";
+    assert_eq!(fetch_count(&["--all"]), both);
+    assert_eq!(fetch_count(&["--queue", "--history"]), both);
+    assert_eq!(fetch_count(&[]), queue_only);
+    assert_eq!(fetch_count(&["--queue"]), queue_only);
 }
 
 #[test]
@@ -1025,7 +1454,7 @@ fn stats_defaults_to_the_current_year_and_counts_added_videos() {
     assert!(stats.contains("YTQ Stats"), "got: {stats}");
     assert!(stats.contains("Videos Added:          1"), "got: {stats}");
 
-    let all = env.ok(&["stats", "--all"]);
+    let all = env.ok(&["stats", "--all-time"]);
     assert!(all.contains("All Time"), "got: {all}");
 }
 
@@ -1045,13 +1474,13 @@ fn stats_separates_readds_and_viewing_sessions_without_inferring_rewatches() {
     )
     .unwrap();
 
-    let stats = env.ok(&["stats", "--all"]);
+    let stats = env.ok(&["stats", "--all-time"]);
     assert!(stats.contains("Videos Added:          1"), "got: {stats}");
     assert!(stats.contains("Videos Re-added:       1"), "got: {stats}");
     assert!(stats.contains("Unique Videos Opened:  1"), "got: {stats}");
     assert!(stats.contains("Viewing Sessions:      2"), "got: {stats}");
 
-    let wrapped = env.ok(&["stats", "--wrapped", "--all"]);
+    let wrapped = env.ok(&["stats", "--wrapped", "--all-time"]);
     assert!(!wrapped.contains("Comfort Video"), "got: {wrapped}");
 }
 

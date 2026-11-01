@@ -238,11 +238,9 @@ impl Db {
         order: SelectionOrder,
         limit: Option<usize>,
     ) -> Result<Vec<Video>> {
-        let limit = limit
-            .map(i64::try_from)
-            .transpose()
-            .context("result count is too large")?
-            .unwrap_or(-1);
+        // A count beyond SQLite's integer range cannot cap anything, so it is
+        // the same as no limit (-1).
+        let limit = limit.map_or(-1, |n| i64::try_from(n).unwrap_or(-1));
         let sql = format!(
             "SELECT q.id, q.url, q.added_at FROM queue q
              LEFT JOIN metadata m ON m.id = q.id

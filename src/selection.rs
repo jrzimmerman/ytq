@@ -7,11 +7,11 @@ use clap::Args;
 #[derive(Args, Debug, Default)]
 pub struct SelectionArgs {
     /// YouTube category ID or unambiguous cached name (e.g. tech)
-    #[arg(long, value_name = "CATEGORY")]
+    #[arg(long, value_name = "CATEGORY", value_parser = parse_text)]
     pub category: Option<String>,
 
     /// Case-insensitive substring of the cached channel name
-    #[arg(long, value_name = "CHANNEL")]
+    #[arg(long, value_name = "CHANNEL", value_parser = parse_text)]
     pub channel: Option<String>,
 
     /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
@@ -21,6 +21,29 @@ pub struct SelectionArgs {
     /// Minimum video duration, inclusive (e.g. 2m, 10m, 1h, 90s)
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub min_duration: Option<i64>,
+}
+
+/// Row-count flags shared by every command that displays queued videos.
+#[derive(Args, Debug, Default)]
+pub struct CountArgs {
+    /// Show at most N videos (defaults: list all, peek 1, search 20)
+    #[arg(long, value_name = "N", value_parser = parse_count, conflicts_with = "all")]
+    pub limit: Option<usize>,
+
+    /// Show every matching video, with no count cap (list already does)
+    #[arg(long)]
+    pub all: bool,
+}
+
+impl CountArgs {
+    /// The row cap to apply, given the command's own default.
+    pub fn cap(&self, default: Option<usize>) -> Option<usize> {
+        if self.all {
+            None
+        } else {
+            self.limit.or(default)
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -51,44 +74,50 @@ impl SelectionArgs {
             bail!("minimum duration must not exceed maximum duration");
         }
         Ok(Selection {
-            query: query.map(|q| nonempty(q, "search query")).transpose()?,
+            query: query.map(str::to_owned),
             category_id: self
                 .category
                 .as_deref()
                 .map(|value| resolve_category(value, load_categories))
                 .transpose()?,
-            channel: self
-                .channel
-                .as_deref()
-                .map(|value| nonempty(value, "channel"))
-                .transpose()?,
+            channel: self.channel.clone(),
             max_duration: self.max_duration,
             min_duration: self.min_duration,
         })
     }
 }
 
-fn nonempty(value: &str, label: &str) -> Result<String> {
+/// Normalizes free-text matching input, which is always compared lowercase.
+pub fn parse_text(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        bail!("{label} must not be empty");
+        return Err("must not be empty".into());
     }
     Ok(value.to_lowercase())
+}
+
+/// The one parser for every row count. The ceiling is SQLite's integer range.
+pub fn parse_count(value: &str) -> Result<usize, String> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| format!("expected a whole number from 1 to {}", i64::MAX))
 }
 
 fn resolve_category(
     value: &str,
     load_categories: impl FnOnce() -> Result<HashMap<String, String>>,
 ) -> Result<String> {
-    let value = nonempty(value, "category")?;
     // IDs work without a categories cache. Unknown IDs simply match no videos.
     if value.bytes().all(|b| b.is_ascii_digit()) {
-        return Ok(value);
+        return Ok(value.to_owned());
     }
     let categories = load_categories()?;
     let mut matches: Vec<_> = categories
         .iter()
-        .filter(|(_, name)| name.to_lowercase().contains(&value))
+        .filter(|(_, name)| name.to_lowercase().contains(value))
         .collect();
     matches.sort_by(|a, b| a.0.cmp(b.0));
     let exact: Vec<_> = matches
@@ -138,6 +167,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn counts_accept_one_through_the_sqlite_ceiling() {
+        assert_eq!(parse_count("1").unwrap(), 1);
+        assert_eq!(
+            parse_count("9223372036854775807").unwrap(),
+            i64::MAX as usize
+        );
+        for text in [
+            "",
+            "0",
+            "-1",
+            "abc",
+            "1.5",
+            "9223372036854775808",
+            "18446744073709551615",
+            "18446744073709551616",
+        ] {
+            assert!(parse_count(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_is_trimmed_lowercased_and_never_empty() {
+        assert_eq!(parse_text(" TECH ").unwrap(), "tech");
+        assert!(parse_text("").is_err());
+        assert!(parse_text("   ").is_err());
+    }
+
+    #[test]
+    fn count_flags_override_the_default_and_all_removes_it() {
+        let count = |limit, all| CountArgs { limit, all };
+        assert_eq!(count(None, false).cap(Some(20)), Some(20));
+        assert_eq!(count(None, false).cap(None), None);
+        assert_eq!(count(Some(3), false).cap(Some(20)), Some(3));
+        assert_eq!(count(None, true).cap(Some(20)), None);
+    }
+
+    #[test]
     fn duration_accepts_explicit_units_and_rejects_invalid_values() {
         for (text, seconds) in [("90s", 90), ("10m", 600), ("30m", 1800), ("1h", 3600)] {
             assert_eq!(parse_duration(text).unwrap(), seconds);
@@ -165,8 +231,8 @@ mod tests {
             ("20".into(), "Music Discussion".into()),
         ]);
         let load = || Ok(categories.clone());
-        assert_eq!(resolve_category(" TECH ", load).unwrap(), "28");
-        assert_eq!(resolve_category("Music", load).unwrap(), "10");
+        assert_eq!(resolve_category("tech", load).unwrap(), "28");
+        assert_eq!(resolve_category("music", load).unwrap(), "10");
         assert_eq!(resolve_category("28", load).unwrap(), "28");
         assert!(
             resolve_category("mus", load)
@@ -175,7 +241,6 @@ mod tests {
                 .contains("ambiguous")
         );
         assert!(resolve_category("unknown", load).is_err());
-        assert!(resolve_category(" ", load).is_err());
     }
 
     #[test]
