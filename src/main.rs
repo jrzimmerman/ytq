@@ -168,11 +168,11 @@ enum Commands {
         #[arg(conflicts_with_all = ["queue", "history", "all"])]
         target: Option<String>,
 
-        /// Fetch for queue videos only (default when no flags given)
+        /// Fetch for queue videos (default when no flags given)
         #[arg(long)]
         queue: bool,
 
-        /// Fetch for history videos only
+        /// Fetch for history videos; combine with --queue for both
         #[arg(long)]
         history: bool,
 
