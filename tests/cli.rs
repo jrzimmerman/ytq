@@ -336,6 +336,487 @@ fn filtered_stack_play_restores_original_position_after_failed_launch() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("dddddddddd4"));
 }
 
+/// `searchable_queue` plus a tombstoned row, with timestamps fixed so that the
+/// rendered tables can be compared byte for byte (run with `TZ=UTC`).
+fn golden_queue(env: &TestEnv) {
+    searchable_queue(env);
+    env.ok(&["add", "ffffffffff6"]);
+    let db = rusqlite::Connection::open(env.data_dir().join("ytq.db")).unwrap();
+    db.execute(
+        "INSERT INTO metadata (id, title, channel, channel_id, duration, duration_seconds,
+         published_at, category_id, tags, fetched_at, unavailable)
+         VALUES ('ffffffffff6', '', '', '', '', 0, '2026-01-01T00:00:00Z', '', '[]', '2026-01-01T00:00:00Z', 1)",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE queue SET added_at = '2026-01-02T03:04:05Z'", [])
+        .unwrap();
+}
+
+fn utc_stdout(env: &TestEnv, args: &[&str]) -> String {
+    let output = env.command().env("TZ", "UTC").args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+// youtube-tab-manager parses these commands' human-readable output. Changing
+// any of these bytes requires coordinating a change in that repository.
+#[test]
+fn bare_list_and_peek_output_is_unchanged() {
+    let env = TestEnv::new("golden");
+    golden_queue(&env);
+
+    assert_eq!(
+        utc_stdout(&env, &["list"]),
+        concat!(
+            "6 videos in queue:\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  3    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  4    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  5    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  6    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek"]),
+        concat!(
+            "Next 1 video(s) (Queue mode):\n",
+            "  #    ID            Title                Channel     Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes  École Tech  10:00     2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek", "2"]),
+        concat!(
+            "Next 2 video(s) (Queue mode):\n",
+            "  #    ID            Title                Channel     Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes  École Tech  10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive       Tech Talks  30:01     2026-01-02 03:04\n",
+        )
+    );
+
+    env.ok(&["config", "mode", "stack"]);
+    assert_eq!(
+        utc_stdout(&env, &["list"]),
+        concat!(
+            "6 videos in queue:\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  3    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  4    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  5    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  6    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek", "20"]),
+        concat!(
+            "Next 6 video(s) (Stack mode):\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+            "  2    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  3    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  4    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  5    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  6    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+        )
+    );
+
+    let empty = TestEnv::new("golden-empty");
+    assert_eq!(empty.ok(&["list"]), "Queue is empty.\n");
+    assert_eq!(empty.ok(&["peek", "20"]), "Queue is empty.\n");
+}
+
+#[test]
+fn companion_parses_list_and_finds_new_videos_in_peek_20() {
+    let env = TestEnv::new("companion");
+    golden_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    env.ok(&["add", "gggggggggg7"]);
+
+    // lib/ytq_helpers.sh: `ytq list | awk 'NR > 2 { print $2 }'`
+    let list = env.ok(&["list"]);
+    let ids: Vec<_> = list
+        .lines()
+        .skip(2)
+        .map(|line| line.split_whitespace().nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "aaaaaaaaaa1",
+            "bbbbbbbbbb2",
+            "cccccccccc3",
+            "dddddddddd4",
+            "eeeeeeeeee5",
+            "ffffffffff6",
+            "gggggggggg7",
+        ]
+    );
+
+    // youtube-tab-manager.sh verifies each new add with `ytq peek 20 | grep`.
+    assert!(env.ok(&["peek", "20"]).contains("gggggggggg7"));
+}
+
+fn table_ids(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .skip(2)
+        .map(|line| line.split_whitespace().nth(1).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_max_duration_is_an_inclusive_ceiling_and_stays_fifo_in_stack_mode() {
+    let env = TestEnv::new("list-max-duration");
+    searchable_queue(&env);
+
+    for mode in ["queue", "stack"] {
+        env.ok(&["config", "mode", mode]);
+        let output = env.ok(&["list", "--max-duration", "30m"]);
+        assert_eq!(
+            output.lines().next().unwrap(),
+            "3 of 5 videos in queue match:"
+        );
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "cccccccccc3", "dddddddddd4"]
+        );
+    }
+}
+
+#[test]
+fn peek_max_duration_applies_before_the_count_in_mode_order() {
+    let env = TestEnv::new("peek-max-duration");
+    searchable_queue(&env);
+
+    let output = env.ok(&["peek", "2", "--max-duration", "30m"]);
+    assert_eq!(
+        output.lines().next().unwrap(),
+        "Next 2 matching video(s) (Queue mode):"
+    );
+    assert_eq!(table_ids(&output), ["aaaaaaaaaa1", "cccccccccc3"]);
+
+    env.ok(&["config", "mode", "stack"]);
+    let output = env.ok(&["peek", "2", "--max-duration", "30m"]);
+    assert_eq!(
+        output.lines().next().unwrap(),
+        "Next 2 matching video(s) (Stack mode):"
+    );
+    assert_eq!(table_ids(&output), ["dddddddddd4", "cccccccccc3"]);
+
+    // Fewer matches than requested shows what exists.
+    let output = env.ok(&["peek", "20", "--max-duration", "5m"]);
+    assert_eq!(table_ids(&output), ["cccccccccc3"]);
+}
+
+#[test]
+fn filtered_list_and_peek_change_nothing_and_separate_no_match_from_empty() {
+    let env = TestEnv::new("filtered-read-only");
+    searchable_queue(&env);
+    let before = env.ok(&["list"]);
+    let stats_before = env.ok(&["stats", "--all"]);
+
+    for args in [
+        vec!["list", "--max-duration", "1s"],
+        vec!["peek", "3", "--max-duration", "1s"],
+    ] {
+        assert_eq!(
+            env.ok(&args),
+            "No matching videos in queue (filters use cached metadata only).\n"
+        );
+    }
+    env.ok(&["list", "--max-duration", "30m"]);
+    env.ok(&["peek", "3", "--max-duration", "30m"]);
+    assert_eq!(env.ok(&["list"]), before);
+    assert_eq!(env.ok(&["stats", "--all"]), stats_before);
+
+    let empty = TestEnv::new("filtered-empty");
+    for args in [
+        vec!["list", "--max-duration", "1s"],
+        vec!["peek", "--max-duration", "1s"],
+    ] {
+        assert_eq!(empty.ok(&args), "Queue is empty.\n");
+    }
+}
+
+#[test]
+fn list_and_peek_filter_by_category_and_combine_with_duration() {
+    let env = TestEnv::new("list-peek-category");
+    searchable_queue(&env);
+
+    for category in ["tech", "28", "Science & Technology"] {
+        let output = env.ok(&["list", "--category", category]);
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"],
+            "{category}"
+        );
+        let output = env.ok(&["peek", "2", "--category", category]);
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "bbbbbbbbbb2"],
+            "{category}"
+        );
+    }
+
+    let filters = ["--category", "tech", "--max-duration", "30m"];
+    let list = [&["list"], &filters[..]].concat();
+    assert_eq!(table_ids(&env.ok(&list)), ["aaaaaaaaaa1", "dddddddddd4"]);
+    env.ok(&["config", "mode", "stack"]);
+    let peek = [&["peek"], &filters[..]].concat();
+    assert_eq!(table_ids(&env.ok(&peek)), ["dddddddddd4"]);
+}
+
+#[test]
+fn list_and_peek_filter_by_channel_substring() {
+    let env = TestEnv::new("list-peek-channel");
+    searchable_queue(&env);
+
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--channel", "tech talks"])),
+        ["bbbbbbbbbb2", "dddddddddd4"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--channel", "ÉCOLE"])),
+        ["aaaaaaaaaa1"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&["peek", "5", "--channel", "tech"])),
+        ["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"]
+    );
+
+    // Every filter together on the same path.
+    let all = [
+        "--category",
+        "tech",
+        "--channel",
+        "talks",
+        "--max-duration",
+        "30m",
+    ];
+    for command in ["list", "peek"] {
+        let args = [&[command], &all[..]].concat();
+        assert_eq!(table_ids(&env.ok(&args)), ["dddddddddd4"], "{command}");
+    }
+}
+
+#[test]
+fn min_duration_is_an_inclusive_floor_and_combines_into_a_range() {
+    let env = TestEnv::new("min-duration");
+    searchable_queue(&env);
+
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--min-duration", "30m"])),
+        ["bbbbbbbbbb2", "dddddddddd4"]
+    );
+    let range = ["--min-duration", "10m", "--max-duration", "30m"];
+    assert_eq!(
+        table_ids(&env.ok(&[&["list"], &range[..]].concat())),
+        ["aaaaaaaaaa1", "dddddddddd4"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&[&["peek", "1"], &range[..]].concat())),
+        ["aaaaaaaaaa1"]
+    );
+    let search = env.ok(&[&["search"], &range[..]].concat());
+    assert_eq!(table_ids(&search), ["aaaaaaaaaa1", "dddddddddd4"]);
+
+    // A single exact duration is a valid range.
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--min-duration", "5m", "--max-duration", "5m"])),
+        ["cccccccccc3"]
+    );
+}
+
+#[test]
+fn a_corrupt_categories_cache_only_affects_category_names() {
+    let env = TestEnv::new("corrupt-categories");
+    searchable_queue(&env);
+    fs::write(env.data_dir().join("categories.json"), "{broken").unwrap();
+
+    env.ok(&["list"]);
+    env.ok(&["peek"]);
+    env.ok(&["search"]);
+    env.ok(&["list", "--category", "28"]);
+    env.ok(&["peek", "--category", "28"]);
+    env.ok(&["search", "--category", "28"]);
+
+    for command in ["list", "peek", "search", "next", "random"] {
+        let error = env.err(&[command, "--category", "tech"]);
+        assert!(error.contains("failed to parse"), "{command}: {error}");
+    }
+    assert_eq!(table_ids(&env.ok(&["list"])).len(), 5);
+}
+
+const SELECTORS: [&str; 5] = ["list", "peek", "search", "next", "random"];
+
+// A shared flag must parse, match, and fail the same way on every command that
+// accepts it. None of these cases reach a browser, so this runs on every OS.
+#[test]
+fn shared_filters_fail_identically_on_every_selector() {
+    let populated = TestEnv::new("matrix-errors");
+    searchable_queue(&populated);
+    let empty = TestEnv::new("matrix-errors-empty");
+    fs::write(
+        empty.data_dir().join("categories.json"),
+        r#"{"28":"Science & Technology","10":"Music","20":"Music Discussion"}"#,
+    )
+    .unwrap();
+    fs::write(
+        populated.data_dir().join("categories.json"),
+        r#"{"28":"Science & Technology","10":"Music","20":"Music Discussion"}"#,
+    )
+    .unwrap();
+    let before = populated.ok(&["list"]);
+
+    for (filters, code, message) in [
+        (
+            vec!["--max-duration", "30"],
+            2,
+            "error: invalid value '30' for '--max-duration <DURATION>': expected a positive duration with unit s, m, or h (e.g. 30m)",
+        ),
+        (
+            vec!["--min-duration", "0m"],
+            2,
+            "error: invalid value '0m' for '--min-duration <DURATION>': duration must be positive and fit in a 64-bit seconds count",
+        ),
+        (
+            vec!["--category", "nosuch"],
+            1,
+            "error: unknown category 'nosuch'; use a YouTube category ID or run `ytq fetch` to cache category names",
+        ),
+        (
+            vec!["--category", "mus"],
+            1,
+            "error: ambiguous category 'mus': Music (10), Music Discussion (20)",
+        ),
+        (
+            vec!["--channel", " "],
+            1,
+            "error: channel must not be empty",
+        ),
+        (
+            vec!["--min-duration", "31m", "--max-duration", "30m"],
+            1,
+            "error: minimum duration must not exceed maximum duration",
+        ),
+    ] {
+        for env in [&populated, &empty] {
+            for command in SELECTORS {
+                let args = [&[command], &filters[..]].concat();
+                let output = env.run(&args);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert_eq!(output.status.code(), Some(code), "{args:?}: {stderr}");
+                assert_eq!(stderr.lines().next(), Some(message), "{args:?}");
+                assert!(output.stdout.is_empty(), "{args:?}");
+            }
+        }
+    }
+    assert_eq!(populated.ok(&["list"]), before);
+}
+
+#[test]
+fn shared_filters_report_no_match_identically_on_every_selector() {
+    let populated = TestEnv::new("matrix-no-match");
+    searchable_queue(&populated);
+    let empty = TestEnv::new("matrix-no-match-empty");
+    let before = populated.ok(&["list"]);
+
+    for filters in [
+        ["--category", "99"],
+        ["--channel", "nobody"],
+        ["--max-duration", "1s"],
+        ["--min-duration", "99h"],
+    ] {
+        for command in SELECTORS {
+            let args = [&[command], &filters[..]].concat();
+            assert_eq!(
+                populated.ok(&args),
+                "No matching videos in queue (filters use cached metadata only).\n",
+                "{args:?}"
+            );
+            assert_eq!(empty.ok(&args), "Queue is empty.\n", "{args:?}");
+        }
+    }
+    assert_eq!(populated.ok(&["list"]), before);
+}
+
+#[test]
+fn shared_filters_select_the_same_videos_on_every_read_only_command() {
+    let env = TestEnv::new("matrix-selection");
+    searchable_queue(&env);
+
+    for (filters, expected) in [
+        (
+            vec!["--category", "tech"],
+            vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"],
+        ),
+        (vec!["--channel", "music"], vec!["cccccccccc3"]),
+        (
+            vec!["--max-duration", "30m"],
+            vec!["aaaaaaaaaa1", "cccccccccc3", "dddddddddd4"],
+        ),
+        (
+            vec!["--min-duration", "30m"],
+            vec!["bbbbbbbbbb2", "dddddddddd4"],
+        ),
+        (
+            vec![
+                "--category",
+                "28",
+                "--channel",
+                "talks",
+                "--min-duration",
+                "10m",
+                "--max-duration",
+                "30m",
+            ],
+            vec!["dddddddddd4"],
+        ),
+    ] {
+        for base in [vec!["list"], vec!["peek", "99"], vec!["search", "--all"]] {
+            let args = [&base[..], &filters[..]].concat();
+            assert_eq!(table_ids(&env.ok(&args)), expected, "{args:?}");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filtered_peek_previews_what_play_opens() {
+    let env = TestEnv::new("peek-previews-play");
+    searchable_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    let filters = [
+        "--category",
+        "tech",
+        "--min-duration",
+        "5m",
+        "--max-duration",
+        "30m",
+    ];
+    let preview = env.ok(&[&["peek"], &filters[..]].concat());
+    let expected = table_ids(&preview)[0].to_string();
+    assert_eq!(expected, "dddddddddd4");
+
+    let output = browser_command(&env, true)
+        .arg("play")
+        .args(filters)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&expected));
+    assert!(!env.ok(&["list"]).contains(&expected));
+}
+
 #[test]
 fn list_peek_and_search_use_the_same_table_without_cached_metadata() {
     let env = TestEnv::new("uncached-table");

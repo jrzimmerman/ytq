@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::models::{Mode, Video, VideoMeta};
+use crate::models::{Video, VideoMeta};
 use crate::selection::Selection;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, named_params, params};
+use rusqlite::{Connection, OptionalExtension, ToSql, functions::FunctionFlags, params};
 
 pub enum SelectionOrder {
     Queue,
@@ -36,7 +36,25 @@ const SELECTION_WHERE: &str = "
     AND (:channel IS NULL OR (m.unavailable = 0 AND instr(ytq_lower(m.channel), :channel) > 0))
     AND (:duration IS NULL OR (m.unavailable = 0 AND m.duration_seconds > 0
          AND m.duration_seconds <= :duration))
+    AND (:min_duration IS NULL OR (m.unavailable = 0
+         AND m.duration_seconds >= :min_duration))
 ";
+
+/// Binds `SELECTION_WHERE`. Every statement using it binds through here, so a
+/// filter cannot be wired up on one command and missed on another.
+fn selection_params<'a>(
+    selection: &'a Selection,
+    target: &'a Option<&'a str>,
+) -> Vec<(&'static str, &'a dyn ToSql)> {
+    vec![
+        (":target", target),
+        (":query", &selection.query),
+        (":category", &selection.category_id),
+        (":channel", &selection.channel),
+        (":duration", &selection.max_duration),
+        (":min_duration", &selection.min_duration),
+    ]
+}
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -212,8 +230,9 @@ impl Db {
         Ok(())
     }
 
-    /// Search is read-only and returns matching videos in configured queue order.
-    pub fn search_videos(
+    /// Read-only selection of matching videos in the given order. Every command
+    /// that displays videos goes through here, so filters behave the same on each.
+    pub fn select_videos(
         &self,
         selection: &Selection,
         order: SelectionOrder,
@@ -222,7 +241,7 @@ impl Db {
         let limit = limit
             .map(i64::try_from)
             .transpose()
-            .context("search limit is too large")?
+            .context("result count is too large")?
             .unwrap_or(-1);
         let sql = format!(
             "SELECT q.id, q.url, q.added_at FROM queue q
@@ -231,23 +250,15 @@ impl Db {
             order.sql()
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            named_params! {
-                ":target": Option::<&str>::None,
-                ":query": selection.query,
-                ":category": selection.category_id,
-                ":channel": selection.channel,
-                ":duration": selection.max_duration,
-                ":limit": limit,
-            },
-            |row| {
-                Ok(Video {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    added_at: row.get(2)?,
-                })
-            },
-        )?;
+        let mut params = selection_params(selection, &None);
+        params.push((":limit", &limit));
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok(Video {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                added_at: row.get(2)?,
+            })
+        })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
@@ -270,13 +281,7 @@ impl Db {
         self.conn
             .query_row(
                 &sql,
-                named_params! {
-                    ":target": target,
-                    ":query": selection.query,
-                    ":category": selection.category_id,
-                    ":channel": selection.channel,
-                    ":duration": selection.max_duration,
-                },
+                selection_params(selection, &target).as_slice(),
                 |row| {
                     Ok(RemovedVideo {
                         video: Video {
@@ -290,48 +295,6 @@ impl Db {
             )
             .optional()
             .map_err(Into::into)
-    }
-
-    /// Lists all videos in FIFO order (oldest first).
-    pub fn list_videos(&self) -> Result<Vec<Video>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, url, added_at FROM queue ORDER BY position ASC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Video {
-                id: row.get(0)?,
-                url: row.get(1)?,
-                added_at: row.get(2)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
-    }
-
-    /// Returns the first or last `n` videos depending on `mode`.
-    pub fn peek_videos(&self, n: usize, mode: &Mode) -> Result<Vec<Video>> {
-        let order = match mode {
-            Mode::Queue => "ASC",
-            Mode::Stack => "DESC",
-        };
-        let sql = format!("SELECT id, url, added_at FROM queue ORDER BY position {order} LIMIT ?1");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let limit = i64::try_from(n).context("peek count is too large")?;
-        let rows = stmt.query_map(params![limit], |row| {
-            Ok(Video {
-                id: row.get(0)?,
-                url: row.get(1)?,
-                added_at: row.get(2)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
     }
 
     /// Returns just the IDs of all videos in the queue (FIFO order).
@@ -583,7 +546,7 @@ mod tests {
                     .is_none()
             );
             assert_eq!(
-                db.list_videos()
+                db.select_videos(&Selection::default(), SelectionOrder::Queue, None)
                     .unwrap()
                     .iter()
                     .map(|v| v.id.as_str())
@@ -600,6 +563,44 @@ mod tests {
     }
 
     #[test]
+    fn duration_floor_is_inclusive_and_excludes_unknown_durations() {
+        let db = Db::open_in_memory().unwrap();
+        for (id, seconds) in [
+            ("missing0001", None),
+            ("zero0000001", Some(0)),
+            ("short000001", Some(599)),
+            ("exact000001", Some(600)),
+            ("gone0000001", Some(900)),
+        ] {
+            db.add_video(&sample_video(id)).unwrap();
+            if let Some(seconds) = seconds {
+                let mut meta = sample_meta(id, "Chan");
+                meta.duration_seconds = seconds;
+                meta.unavailable = id == "gone0000001";
+                db.upsert_metadata_batch(&[meta]).unwrap();
+            }
+        }
+        let selection = Selection {
+            min_duration: Some(600),
+            ..Selection::default()
+        };
+        let ids: Vec<String> = db
+            .select_videos(&selection, SelectionOrder::Queue, None)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(ids, ["exact000001"]);
+
+        let removed = db
+            .take_matching(&selection, SelectionOrder::Random, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed.video.id, "exact000001");
+        assert_eq!(db.queue_len().unwrap(), 4);
+    }
+
+    #[test]
     fn search_matches_literal_unicode_text_and_ids_without_metadata() {
         let db = Db::open_in_memory().unwrap();
         db.add_video(&sample_video("abcdefghij1")).unwrap();
@@ -613,12 +614,12 @@ mod tests {
                 ..Selection::default()
             };
             let matches = db
-                .search_videos(&selection, SelectionOrder::Queue, None)
+                .select_videos(&selection, SelectionOrder::Queue, None)
                 .unwrap();
             assert_eq!(matches.len(), 1, "{query}");
         }
         assert_eq!(
-            db.search_videos(&Selection::default(), SelectionOrder::Stack, Some(1))
+            db.select_videos(&Selection::default(), SelectionOrder::Stack, Some(1))
                 .unwrap()[0]
                 .id,
             "abcdefghij2"
@@ -724,13 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn list_videos_in_fifo_order() {
+    fn select_videos_in_queue_order_returns_oldest_first_without_a_limit() {
         let db = Db::open_in_memory().unwrap();
         for id in ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"] {
             db.add_video(&sample_video(id)).unwrap();
         }
         let ids: Vec<String> = db
-            .list_videos()
+            .select_videos(&Selection::default(), SelectionOrder::Queue, None)
             .unwrap()
             .into_iter()
             .map(|v| v.id)
@@ -739,13 +740,13 @@ mod tests {
     }
 
     #[test]
-    fn peek_in_stack_mode_returns_newest_first() {
+    fn select_videos_in_stack_order_returns_newest_first() {
         let db = Db::open_in_memory().unwrap();
         for id in ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"] {
             db.add_video(&sample_video(id)).unwrap();
         }
         let peeked: Vec<String> = db
-            .peek_videos(2, &Mode::Stack)
+            .select_videos(&Selection::default(), SelectionOrder::Stack, Some(2))
             .unwrap()
             .into_iter()
             .map(|v| v.id)
@@ -754,13 +755,13 @@ mod tests {
     }
 
     #[test]
-    fn peek_in_queue_mode_returns_oldest_first() {
+    fn select_videos_in_queue_order_returns_oldest_first() {
         let db = Db::open_in_memory().unwrap();
         for id in ["aaaaaaaaaa1", "bbbbbbbbbb2", "cccccccccc3"] {
             db.add_video(&sample_video(id)).unwrap();
         }
         let peeked: Vec<String> = db
-            .peek_videos(2, &Mode::Queue)
+            .select_videos(&Selection::default(), SelectionOrder::Queue, Some(2))
             .unwrap()
             .into_iter()
             .map(|v| v.id)

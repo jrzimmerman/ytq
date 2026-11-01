@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Result, bail};
 use clap::Args;
 
-/// Metadata constraints shared by search and opening commands.
+/// Metadata constraints shared by every command that selects queued videos.
 #[derive(Args, Debug, Default)]
 pub struct SelectionArgs {
     /// YouTube category ID or unambiguous cached name (e.g. tech)
@@ -17,6 +17,10 @@ pub struct SelectionArgs {
     /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub max_duration: Option<i64>,
+
+    /// Minimum video duration, inclusive (e.g. 2m, 10m, 1h, 90s)
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub min_duration: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -25,24 +29,33 @@ pub struct Selection {
     pub category_id: Option<String>,
     pub channel: Option<String>,
     pub max_duration: Option<i64>,
+    pub min_duration: Option<i64>,
 }
 
 impl SelectionArgs {
     pub fn has_constraints(&self) -> bool {
-        self.category.is_some() || self.channel.is_some() || self.max_duration.is_some()
+        self.category.is_some()
+            || self.channel.is_some()
+            || self.max_duration.is_some()
+            || self.min_duration.is_some()
     }
 
     pub fn resolve(
         &self,
         query: Option<&str>,
-        categories: &HashMap<String, String>,
+        load_categories: impl FnOnce() -> Result<HashMap<String, String>>,
     ) -> Result<Selection> {
+        if let (Some(min), Some(max)) = (self.min_duration, self.max_duration)
+            && min > max
+        {
+            bail!("minimum duration must not exceed maximum duration");
+        }
         Ok(Selection {
             query: query.map(|q| nonempty(q, "search query")).transpose()?,
             category_id: self
                 .category
                 .as_deref()
-                .map(|value| resolve_category(value, categories))
+                .map(|value| resolve_category(value, load_categories))
                 .transpose()?,
             channel: self
                 .channel
@@ -50,6 +63,7 @@ impl SelectionArgs {
                 .map(|value| nonempty(value, "channel"))
                 .transpose()?,
             max_duration: self.max_duration,
+            min_duration: self.min_duration,
         })
     }
 }
@@ -62,12 +76,16 @@ fn nonempty(value: &str, label: &str) -> Result<String> {
     Ok(value.to_lowercase())
 }
 
-fn resolve_category(value: &str, categories: &HashMap<String, String>) -> Result<String> {
+fn resolve_category(
+    value: &str,
+    load_categories: impl FnOnce() -> Result<HashMap<String, String>>,
+) -> Result<String> {
     let value = nonempty(value, "category")?;
     // IDs work without a categories cache. Unknown IDs simply match no videos.
     if value.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(value);
     }
+    let categories = load_categories()?;
     let mut matches: Vec<_> = categories
         .iter()
         .filter(|(_, name)| name.to_lowercase().contains(&value))
@@ -146,16 +164,67 @@ mod tests {
             ("10".into(), "Music".into()),
             ("20".into(), "Music Discussion".into()),
         ]);
-        assert_eq!(resolve_category(" TECH ", &categories).unwrap(), "28");
-        assert_eq!(resolve_category("Music", &categories).unwrap(), "10");
-        assert_eq!(resolve_category("28", &HashMap::new()).unwrap(), "28");
+        let load = || Ok(categories.clone());
+        assert_eq!(resolve_category(" TECH ", load).unwrap(), "28");
+        assert_eq!(resolve_category("Music", load).unwrap(), "10");
+        assert_eq!(resolve_category("28", load).unwrap(), "28");
         assert!(
-            resolve_category("mus", &categories)
+            resolve_category("mus", load)
                 .unwrap_err()
                 .to_string()
                 .contains("ambiguous")
         );
-        assert!(resolve_category("unknown", &categories).is_err());
-        assert!(resolve_category(" ", &categories).is_err());
+        assert!(resolve_category("unknown", load).is_err());
+        assert!(resolve_category(" ", load).is_err());
+    }
+
+    #[test]
+    fn duration_range_rejects_only_an_inverted_pair() {
+        let range = |min, max| SelectionArgs {
+            min_duration: Some(min),
+            max_duration: Some(max),
+            ..SelectionArgs::default()
+        };
+        let no_categories = || Ok(HashMap::new());
+        assert!(range(600, 600).resolve(None, no_categories).is_ok());
+        assert!(range(60, 600).resolve(None, no_categories).is_ok());
+        assert_eq!(
+            range(601, 600)
+                .resolve(None, no_categories)
+                .unwrap_err()
+                .to_string(),
+            "minimum duration must not exceed maximum duration"
+        );
+    }
+
+    #[test]
+    fn categories_load_only_to_resolve_a_name() {
+        let unreadable = || bail!("categories cache is unreadable");
+        let by_id = SelectionArgs {
+            category: Some("28".into()),
+            ..SelectionArgs::default()
+        };
+        assert_eq!(
+            by_id.resolve(None, unreadable).unwrap().category_id,
+            Some("28".into())
+        );
+        assert!(
+            SelectionArgs::default()
+                .resolve(None, unreadable)
+                .unwrap()
+                .category_id
+                .is_none()
+        );
+        let by_name = SelectionArgs {
+            category: Some("tech".into()),
+            ..SelectionArgs::default()
+        };
+        assert!(
+            by_name
+                .resolve(None, unreadable)
+                .unwrap_err()
+                .to_string()
+                .contains("unreadable")
+        );
     }
 }

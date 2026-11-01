@@ -66,9 +66,12 @@ enum Commands {
         all: bool,
     },
 
-    /// List the current queue
+    /// List the current queue, oldest first
     #[command(alias = "l", alias = "ls")]
-    List,
+    List {
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
+    },
 
     /// Look at the next few videos without opening them
     #[command(alias = "k")]
@@ -76,6 +79,9 @@ enum Commands {
         /// How many videos to show
         #[arg(default_value = "1")]
         n: NonZeroUsize,
+
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
     },
 
     /// Remove a video by ID or URL
@@ -209,8 +215,8 @@ fn run() -> Result<()> {
             limit,
             all,
         } => commands::search(query.as_deref(), &selection, (!all).then_some(limit.get())),
-        Commands::List => commands::list(),
-        Commands::Peek { n } => commands::peek(n.get()),
+        Commands::List { selection } => commands::list(&selection),
+        Commands::Peek { n, selection } => commands::peek(n.get(), &selection),
         Commands::Remove { target } => commands::remove(&target),
         Commands::Stats {
             wrapped,
@@ -265,5 +271,16 @@ mod tests {
     fn positive_counts_are_required() {
         assert!(Cli::try_parse_from(["ytq", "peek", "0"]).is_err());
         assert!(Cli::try_parse_from(["ytq", "fetch", "--limit", "0"]).is_err());
+    }
+
+    #[test]
+    fn list_and_peek_accept_filters_but_no_count_flag() {
+        assert!(Cli::try_parse_from(["ytq", "list", "--max-duration", "10m"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "peek", "3", "--max-duration", "10m"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "peek", "--max-duration", "10m", "3"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "list", "--category", "tech"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "peek", "--channel", "talks"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "list", "--limit", "3"]).is_err());
+        assert!(Cli::try_parse_from(["ytq", "peek", "--limit", "3"]).is_err());
     }
 }
