@@ -64,8 +64,7 @@ pub fn next(target: Option<&str>, selection: &SelectionArgs) -> Result<()> {
     let target_id = target.map(youtube::extract_video_id).transpose()?;
 
     let has_constraints = selection.has_constraints();
-    let categories = store::load_categories(&paths.categories_file)?;
-    let selection = selection.resolve(None, &categories)?;
+    let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
     let video = db.take_matching(&selection, selection_order(cfg.mode), target_id.as_deref())?;
 
     let Some(removed) = video else {
@@ -171,8 +170,7 @@ pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usiz
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
-    let categories = store::load_categories(&paths.categories_file)?;
-    let selection = selection.resolve(query, &categories)?;
+    let selection = selection.resolve(query, || store::load_categories(&paths.categories_file))?;
     // Fetch one extra row to distinguish a complete result from a truncated one.
     let fetch_limit = limit
         .map(|n| {
@@ -208,7 +206,7 @@ pub fn list(selection: &SelectionArgs) -> Result<()> {
     let db = Db::open(&paths.db_file)?;
 
     let has_constraints = selection.has_constraints();
-    let selection = selection.resolve(None, &HashMap::new())?;
+    let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
     // Always oldest first: `list` is the inventory, `peek` is what plays next.
     let queue = db.select_videos(&selection, SelectionOrder::Queue, None)?;
     if queue.is_empty() {
@@ -349,7 +347,7 @@ pub fn peek(n: usize, selection: &SelectionArgs) -> Result<()> {
     let db = Db::open(&paths.db_file)?;
 
     let has_constraints = selection.has_constraints();
-    let selection = selection.resolve(None, &HashMap::new())?;
+    let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
     let slice = db.select_videos(&selection, selection_order(cfg.mode), Some(n))?;
     if slice.is_empty() {
         print_no_matches(&db)?;
@@ -770,8 +768,7 @@ fn collect_ids_for_scope(
 pub fn random(selection: &SelectionArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths.db_file)?;
-    let categories = store::load_categories(&paths.categories_file)?;
-    let selection = selection.resolve(None, &categories)?;
+    let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
     let video = db.take_matching(&selection, SelectionOrder::Random, None)?;
 
     let Some(removed) = video else {

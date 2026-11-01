@@ -69,6 +69,10 @@ enum Commands {
     /// List the current queue, oldest first
     #[command(alias = "l", alias = "ls")]
     List {
+        /// YouTube category ID or unambiguous cached name (e.g. tech)
+        #[arg(long, value_name = "CATEGORY")]
+        category: Option<String>,
+
         /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
         #[arg(long, value_name = "DURATION", value_parser = selection::parse_duration)]
         max_duration: Option<i64>,
@@ -80,6 +84,10 @@ enum Commands {
         /// How many videos to show
         #[arg(default_value = "1")]
         n: NonZeroUsize,
+
+        /// YouTube category ID or unambiguous cached name (e.g. tech)
+        #[arg(long, value_name = "CATEGORY")]
+        category: Option<String>,
 
         /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
         #[arg(long, value_name = "DURATION", value_parser = selection::parse_duration)]
@@ -217,13 +225,22 @@ fn run() -> Result<()> {
             limit,
             all,
         } => commands::search(query.as_deref(), &selection, (!all).then_some(limit.get())),
-        Commands::List { max_duration } => commands::list(&selection::SelectionArgs {
+        Commands::List {
+            category,
+            max_duration,
+        } => commands::list(&selection::SelectionArgs {
+            category,
             max_duration,
             ..Default::default()
         }),
-        Commands::Peek { n, max_duration } => commands::peek(
+        Commands::Peek {
+            n,
+            category,
+            max_duration,
+        } => commands::peek(
             n.get(),
             &selection::SelectionArgs {
+                category,
                 max_duration,
                 ..Default::default()
             },

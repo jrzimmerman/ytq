@@ -548,6 +548,54 @@ fn filtered_list_and_peek_change_nothing_and_separate_no_match_from_empty() {
 }
 
 #[test]
+fn list_and_peek_filter_by_category_and_combine_with_duration() {
+    let env = TestEnv::new("list-peek-category");
+    searchable_queue(&env);
+
+    for category in ["tech", "28", "Science & Technology"] {
+        let output = env.ok(&["list", "--category", category]);
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"],
+            "{category}"
+        );
+        let output = env.ok(&["peek", "2", "--category", category]);
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "bbbbbbbbbb2"],
+            "{category}"
+        );
+    }
+
+    let filters = ["--category", "tech", "--max-duration", "30m"];
+    let list = [&["list"], &filters[..]].concat();
+    assert_eq!(table_ids(&env.ok(&list)), ["aaaaaaaaaa1", "dddddddddd4"]);
+    env.ok(&["config", "mode", "stack"]);
+    let peek = [&["peek"], &filters[..]].concat();
+    assert_eq!(table_ids(&env.ok(&peek)), ["dddddddddd4"]);
+}
+
+#[test]
+fn a_corrupt_categories_cache_only_affects_category_names() {
+    let env = TestEnv::new("corrupt-categories");
+    searchable_queue(&env);
+    fs::write(env.data_dir().join("categories.json"), "{broken").unwrap();
+
+    env.ok(&["list"]);
+    env.ok(&["peek"]);
+    env.ok(&["search"]);
+    env.ok(&["list", "--category", "28"]);
+    env.ok(&["peek", "--category", "28"]);
+    env.ok(&["search", "--category", "28"]);
+
+    for command in ["list", "peek", "search", "next", "random"] {
+        let error = env.err(&[command, "--category", "tech"]);
+        assert!(error.contains("failed to parse"), "{command}: {error}");
+    }
+    assert_eq!(table_ids(&env.ok(&["list"])).len(), 5);
+}
+
+#[test]
 fn list_peek_and_search_use_the_same_table_without_cached_metadata() {
     let env = TestEnv::new("uncached-table");
     env.ok(&["add", "dQw4w9WgXcQ"]);
