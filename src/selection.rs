@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Result, bail};
 use clap::Args;
 
-/// Metadata constraints shared by search and opening commands.
+/// Metadata constraints shared by every command that selects queued videos.
 #[derive(Args, Debug, Default)]
 pub struct SelectionArgs {
     /// YouTube category ID or unambiguous cached name (e.g. tech)
@@ -100,7 +100,7 @@ fn resolve_category(
     }
 }
 
-pub fn parse_duration(value: &str) -> Result<i64, String> {
+fn parse_duration(value: &str) -> Result<i64, String> {
     let value = value.trim();
     let (number, multiplier) = match value.as_bytes().last() {
         Some(b's') => (&value[..value.len() - 1], 1),

@@ -69,13 +69,8 @@ enum Commands {
     /// List the current queue, oldest first
     #[command(alias = "l", alias = "ls")]
     List {
-        /// YouTube category ID or unambiguous cached name (e.g. tech)
-        #[arg(long, value_name = "CATEGORY")]
-        category: Option<String>,
-
-        /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
-        #[arg(long, value_name = "DURATION", value_parser = selection::parse_duration)]
-        max_duration: Option<i64>,
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
     },
 
     /// Look at the next few videos without opening them
@@ -85,13 +80,8 @@ enum Commands {
         #[arg(default_value = "1")]
         n: NonZeroUsize,
 
-        /// YouTube category ID or unambiguous cached name (e.g. tech)
-        #[arg(long, value_name = "CATEGORY")]
-        category: Option<String>,
-
-        /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
-        #[arg(long, value_name = "DURATION", value_parser = selection::parse_duration)]
-        max_duration: Option<i64>,
+        #[command(flatten)]
+        selection: selection::SelectionArgs,
     },
 
     /// Remove a video by ID or URL
@@ -225,26 +215,8 @@ fn run() -> Result<()> {
             limit,
             all,
         } => commands::search(query.as_deref(), &selection, (!all).then_some(limit.get())),
-        Commands::List {
-            category,
-            max_duration,
-        } => commands::list(&selection::SelectionArgs {
-            category,
-            max_duration,
-            ..Default::default()
-        }),
-        Commands::Peek {
-            n,
-            category,
-            max_duration,
-        } => commands::peek(
-            n.get(),
-            &selection::SelectionArgs {
-                category,
-                max_duration,
-                ..Default::default()
-            },
-        ),
+        Commands::List { selection } => commands::list(&selection),
+        Commands::Peek { n, selection } => commands::peek(n.get(), &selection),
         Commands::Remove { target } => commands::remove(&target),
         Commands::Stats {
             wrapped,
@@ -306,6 +278,8 @@ mod tests {
         assert!(Cli::try_parse_from(["ytq", "list", "--max-duration", "10m"]).is_ok());
         assert!(Cli::try_parse_from(["ytq", "peek", "3", "--max-duration", "10m"]).is_ok());
         assert!(Cli::try_parse_from(["ytq", "peek", "--max-duration", "10m", "3"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "list", "--category", "tech"]).is_ok());
+        assert!(Cli::try_parse_from(["ytq", "peek", "--channel", "talks"]).is_ok());
         assert!(Cli::try_parse_from(["ytq", "list", "--limit", "3"]).is_err());
         assert!(Cli::try_parse_from(["ytq", "peek", "--limit", "3"]).is_err());
     }

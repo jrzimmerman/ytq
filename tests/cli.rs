@@ -576,6 +576,39 @@ fn list_and_peek_filter_by_category_and_combine_with_duration() {
 }
 
 #[test]
+fn list_and_peek_filter_by_channel_substring() {
+    let env = TestEnv::new("list-peek-channel");
+    searchable_queue(&env);
+
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--channel", "tech talks"])),
+        ["bbbbbbbbbb2", "dddddddddd4"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--channel", "ÉCOLE"])),
+        ["aaaaaaaaaa1"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&["peek", "5", "--channel", "tech"])),
+        ["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"]
+    );
+
+    // Every filter together on the same path.
+    let all = [
+        "--category",
+        "tech",
+        "--channel",
+        "talks",
+        "--max-duration",
+        "30m",
+    ];
+    for command in ["list", "peek"] {
+        let args = [&[command], &all[..]].concat();
+        assert_eq!(table_ids(&env.ok(&args)), ["dddddddddd4"], "{command}");
+    }
+}
+
+#[test]
 fn a_corrupt_categories_cache_only_affects_category_names() {
     let env = TestEnv::new("corrupt-categories");
     searchable_queue(&env);
