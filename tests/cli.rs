@@ -465,6 +465,88 @@ fn companion_parses_list_and_finds_new_videos_in_peek_20() {
     assert!(env.ok(&["peek", "20"]).contains("gggggggggg7"));
 }
 
+fn table_ids(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .skip(2)
+        .map(|line| line.split_whitespace().nth(1).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_max_duration_is_an_inclusive_ceiling_and_stays_fifo_in_stack_mode() {
+    let env = TestEnv::new("list-max-duration");
+    searchable_queue(&env);
+
+    for mode in ["queue", "stack"] {
+        env.ok(&["config", "mode", mode]);
+        let output = env.ok(&["list", "--max-duration", "30m"]);
+        assert_eq!(
+            output.lines().next().unwrap(),
+            "3 of 5 videos in queue match:"
+        );
+        assert_eq!(
+            table_ids(&output),
+            ["aaaaaaaaaa1", "cccccccccc3", "dddddddddd4"]
+        );
+    }
+}
+
+#[test]
+fn peek_max_duration_applies_before_the_count_in_mode_order() {
+    let env = TestEnv::new("peek-max-duration");
+    searchable_queue(&env);
+
+    let output = env.ok(&["peek", "2", "--max-duration", "30m"]);
+    assert_eq!(
+        output.lines().next().unwrap(),
+        "Next 2 matching video(s) (Queue mode):"
+    );
+    assert_eq!(table_ids(&output), ["aaaaaaaaaa1", "cccccccccc3"]);
+
+    env.ok(&["config", "mode", "stack"]);
+    let output = env.ok(&["peek", "2", "--max-duration", "30m"]);
+    assert_eq!(
+        output.lines().next().unwrap(),
+        "Next 2 matching video(s) (Stack mode):"
+    );
+    assert_eq!(table_ids(&output), ["dddddddddd4", "cccccccccc3"]);
+
+    // Fewer matches than requested shows what exists.
+    let output = env.ok(&["peek", "20", "--max-duration", "5m"]);
+    assert_eq!(table_ids(&output), ["cccccccccc3"]);
+}
+
+#[test]
+fn filtered_list_and_peek_change_nothing_and_separate_no_match_from_empty() {
+    let env = TestEnv::new("filtered-read-only");
+    searchable_queue(&env);
+    let before = env.ok(&["list"]);
+    let stats_before = env.ok(&["stats", "--all"]);
+
+    for args in [
+        vec!["list", "--max-duration", "1s"],
+        vec!["peek", "3", "--max-duration", "1s"],
+    ] {
+        assert_eq!(
+            env.ok(&args),
+            "No matching videos in queue (filters use cached metadata only).\n"
+        );
+    }
+    env.ok(&["list", "--max-duration", "30m"]);
+    env.ok(&["peek", "3", "--max-duration", "30m"]);
+    assert_eq!(env.ok(&["list"]), before);
+    assert_eq!(env.ok(&["stats", "--all"]), stats_before);
+
+    let empty = TestEnv::new("filtered-empty");
+    for args in [
+        vec!["list", "--max-duration", "1s"],
+        vec!["peek", "--max-duration", "1s"],
+    ] {
+        assert_eq!(empty.ok(&args), "Queue is empty.\n");
+    }
+}
+
 #[test]
 fn list_peek_and_search_use_the_same_table_without_cached_metadata() {
     let env = TestEnv::new("uncached-table");

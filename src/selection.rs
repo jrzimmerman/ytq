@@ -96,7 +96,7 @@ fn resolve_category(value: &str, categories: &HashMap<String, String>) -> Result
     }
 }
 
-fn parse_duration(value: &str) -> Result<i64, String> {
+pub fn parse_duration(value: &str) -> Result<i64, String> {
     let value = value.trim();
     let (number, multiplier) = match value.as_bytes().last() {
         Some(b's') => (&value[..value.len() - 1], 1),

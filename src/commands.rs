@@ -177,10 +177,10 @@ pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usiz
     let fetch_limit = limit
         .map(|n| {
             n.checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("search limit is too large"))
+                .ok_or_else(|| anyhow::anyhow!("result count is too large"))
         })
         .transpose()?;
-    let mut videos = db.search_videos(&selection, selection_order(cfg.mode), fetch_limit)?;
+    let mut videos = db.select_videos(&selection, selection_order(cfg.mode), fetch_limit)?;
     if videos.is_empty() {
         print_no_matches(&db)?;
         return Ok(());
@@ -202,19 +202,30 @@ pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usiz
     Ok(())
 }
 
-pub fn list() -> Result<()> {
+pub fn list(selection: &SelectionArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
 
-    let queue = db.list_videos()?;
+    let has_constraints = selection.has_constraints();
+    let selection = selection.resolve(None, &HashMap::new())?;
+    // Always oldest first: `list` is the inventory, `peek` is what plays next.
+    let queue = db.select_videos(&selection, SelectionOrder::Queue, None)?;
     if queue.is_empty() {
-        outln!("{}", "Queue is empty.".yellow());
+        print_no_matches(&db)?;
         return Ok(());
     }
     let metadata = db.load_metadata_for(&queue)?;
 
-    outln!("{} videos in queue:", queue.len());
+    if has_constraints {
+        outln!(
+            "{} of {} videos in queue match:",
+            queue.len(),
+            db.queue_len()?
+        );
+    } else {
+        outln!("{} videos in queue:", queue.len());
+    }
     print_list_enriched(&queue, &metadata, !cfg.offline);
     Ok(())
 }
@@ -332,20 +343,26 @@ fn table_cell(s: &str, width: usize) -> String {
     text
 }
 
-pub fn peek(n: usize) -> Result<()> {
+pub fn peek(n: usize, selection: &SelectionArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
 
-    let slice = db.peek_videos(n, &cfg.mode)?;
-    let metadata = db.load_metadata_for(&slice)?;
+    let has_constraints = selection.has_constraints();
+    let selection = selection.resolve(None, &HashMap::new())?;
+    let slice = db.select_videos(&selection, selection_order(cfg.mode), Some(n))?;
     if slice.is_empty() {
-        outln!("{}", "Queue is empty.".yellow());
+        print_no_matches(&db)?;
         return Ok(());
     }
+    let metadata = db.load_metadata_for(&slice)?;
 
     let actual = slice.len();
-    outln!("Next {actual} video(s) ({:?} mode):", cfg.mode);
+    if has_constraints {
+        outln!("Next {actual} matching video(s) ({:?} mode):", cfg.mode);
+    } else {
+        outln!("Next {actual} video(s) ({:?} mode):", cfg.mode);
+    }
     print_list_enriched(&slice, &metadata, !cfg.offline);
     Ok(())
 }
