@@ -336,6 +336,135 @@ fn filtered_stack_play_restores_original_position_after_failed_launch() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("dddddddddd4"));
 }
 
+/// `searchable_queue` plus a tombstoned row, with timestamps fixed so that the
+/// rendered tables can be compared byte for byte (run with `TZ=UTC`).
+fn golden_queue(env: &TestEnv) {
+    searchable_queue(env);
+    env.ok(&["add", "ffffffffff6"]);
+    let db = rusqlite::Connection::open(env.data_dir().join("ytq.db")).unwrap();
+    db.execute(
+        "INSERT INTO metadata (id, title, channel, channel_id, duration, duration_seconds,
+         published_at, category_id, tags, fetched_at, unavailable)
+         VALUES ('ffffffffff6', '', '', '', '', 0, '2026-01-01T00:00:00Z', '', '[]', '2026-01-01T00:00:00Z', 1)",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE queue SET added_at = '2026-01-02T03:04:05Z'", [])
+        .unwrap();
+}
+
+fn utc_stdout(env: &TestEnv, args: &[&str]) -> String {
+    let output = env.command().env("TZ", "UTC").args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+// youtube-tab-manager parses these commands' human-readable output. Changing
+// any of these bytes requires coordinating a change in that repository.
+#[test]
+fn bare_list_and_peek_output_is_unchanged() {
+    let env = TestEnv::new("golden");
+    golden_queue(&env);
+
+    assert_eq!(
+        utc_stdout(&env, &["list"]),
+        concat!(
+            "6 videos in queue:\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  3    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  4    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  5    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  6    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek"]),
+        concat!(
+            "Next 1 video(s) (Queue mode):\n",
+            "  #    ID            Title                Channel     Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes  École Tech  10:00     2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek", "2"]),
+        concat!(
+            "Next 2 video(s) (Queue mode):\n",
+            "  #    ID            Title                Channel     Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes  École Tech  10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive       Tech Talks  30:01     2026-01-02 03:04\n",
+        )
+    );
+
+    env.ok(&["config", "mode", "stack"]);
+    assert_eq!(
+        utc_stdout(&env, &["list"]),
+        concat!(
+            "6 videos in queue:\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+            "  2    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  3    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  4    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  5    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  6    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+        )
+    );
+    assert_eq!(
+        utc_stdout(&env, &["peek", "20"]),
+        concat!(
+            "Next 6 video(s) (Stack mode):\n",
+            "  #    ID            Title                              Channel       Duration  Added\n",
+            "  1    ffffffffff6   (unavailable - consider `ytq rm`)                          2026-01-02 03:04\n",
+            "  2    eeeeeeeeee5   (metadata not cached)                                      2026-01-02 03:04\n",
+            "  3    dddddddddd4   Rust in thirty minutes             Tech Talks    30:00     2026-01-02 03:04\n",
+            "  4    cccccccccc3   A music lesson                     Music School  5:00      2026-01-02 03:04\n",
+            "  5    bbbbbbbbbb2   Rust deep dive                     Tech Talks    30:01     2026-01-02 03:04\n",
+            "  6    aaaaaaaaaa1   Rust in ten minutes                École Tech    10:00     2026-01-02 03:04\n",
+        )
+    );
+
+    let empty = TestEnv::new("golden-empty");
+    assert_eq!(empty.ok(&["list"]), "Queue is empty.\n");
+    assert_eq!(empty.ok(&["peek", "20"]), "Queue is empty.\n");
+}
+
+#[test]
+fn companion_parses_list_and_finds_new_videos_in_peek_20() {
+    let env = TestEnv::new("companion");
+    golden_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    env.ok(&["add", "gggggggggg7"]);
+
+    // lib/ytq_helpers.sh: `ytq list | awk 'NR > 2 { print $2 }'`
+    let list = env.ok(&["list"]);
+    let ids: Vec<_> = list
+        .lines()
+        .skip(2)
+        .map(|line| line.split_whitespace().nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "aaaaaaaaaa1",
+            "bbbbbbbbbb2",
+            "cccccccccc3",
+            "dddddddddd4",
+            "eeeeeeeeee5",
+            "ffffffffff6",
+            "gggggggggg7",
+        ]
+    );
+
+    // youtube-tab-manager.sh verifies each new add with `ytq peek 20 | grep`.
+    assert!(env.ok(&["peek", "20"]).contains("gggggggggg7"));
+}
+
 #[test]
 fn list_peek_and_search_use_the_same_table_without_cached_metadata() {
     let env = TestEnv::new("uncached-table");
