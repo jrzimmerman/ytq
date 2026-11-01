@@ -164,11 +164,12 @@ full count in its header.
 
 ### Exit Codes
 
-A value that is wrong on its face, such as `--limit 0`, `--max-duration 30`,
-`--channel ""`, or `--year 26`, exits with status 2, as does any other usage
-error such as combining `--limit` with `--all`. A failure that depends on saved
-state or on two flags together, such as an unknown `--category` or `--from` later
-than `--to`, exits with status 1.
+A flag, count, or query value that is wrong on its face, such as `--limit 0`,
+`peek 0`, `--max-duration 30`, `--channel ""`, `search ""`, or `--year 26`, exits
+with status 2, as does any other usage error such as combining `--limit` with
+`--all`. A failure that depends on saved state or on two flags together, such as
+an unknown `--category` or `--from` later than `--to`, exits with status 1, and so
+do malformed video IDs or URLs and bad config values.
 
 ## Configuration
 
