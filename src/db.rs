@@ -7,7 +7,7 @@ use crate::selection::Selection;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, named_params, params};
+use rusqlite::{Connection, OptionalExtension, ToSql, functions::FunctionFlags, params};
 
 pub enum SelectionOrder {
     Queue,
@@ -36,7 +36,25 @@ const SELECTION_WHERE: &str = "
     AND (:channel IS NULL OR (m.unavailable = 0 AND instr(ytq_lower(m.channel), :channel) > 0))
     AND (:duration IS NULL OR (m.unavailable = 0 AND m.duration_seconds > 0
          AND m.duration_seconds <= :duration))
+    AND (:min_duration IS NULL OR (m.unavailable = 0
+         AND m.duration_seconds >= :min_duration))
 ";
+
+/// Binds `SELECTION_WHERE`. Every statement using it binds through here, so a
+/// filter cannot be wired up on one command and missed on another.
+fn selection_params<'a>(
+    selection: &'a Selection,
+    target: &'a Option<&'a str>,
+) -> Vec<(&'static str, &'a dyn ToSql)> {
+    vec![
+        (":target", target),
+        (":query", &selection.query),
+        (":category", &selection.category_id),
+        (":channel", &selection.channel),
+        (":duration", &selection.max_duration),
+        (":min_duration", &selection.min_duration),
+    ]
+}
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -232,23 +250,15 @@ impl Db {
             order.sql()
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            named_params! {
-                ":target": Option::<&str>::None,
-                ":query": selection.query,
-                ":category": selection.category_id,
-                ":channel": selection.channel,
-                ":duration": selection.max_duration,
-                ":limit": limit,
-            },
-            |row| {
-                Ok(Video {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    added_at: row.get(2)?,
-                })
-            },
-        )?;
+        let mut params = selection_params(selection, &None);
+        params.push((":limit", &limit));
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok(Video {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                added_at: row.get(2)?,
+            })
+        })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
@@ -271,13 +281,7 @@ impl Db {
         self.conn
             .query_row(
                 &sql,
-                named_params! {
-                    ":target": target,
-                    ":query": selection.query,
-                    ":category": selection.category_id,
-                    ":channel": selection.channel,
-                    ":duration": selection.max_duration,
-                },
+                selection_params(selection, &target).as_slice(),
                 |row| {
                     Ok(RemovedVideo {
                         video: Video {
@@ -556,6 +560,44 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn duration_floor_is_inclusive_and_excludes_unknown_durations() {
+        let db = Db::open_in_memory().unwrap();
+        for (id, seconds) in [
+            ("missing0001", None),
+            ("zero0000001", Some(0)),
+            ("short000001", Some(599)),
+            ("exact000001", Some(600)),
+            ("gone0000001", Some(900)),
+        ] {
+            db.add_video(&sample_video(id)).unwrap();
+            if let Some(seconds) = seconds {
+                let mut meta = sample_meta(id, "Chan");
+                meta.duration_seconds = seconds;
+                meta.unavailable = id == "gone0000001";
+                db.upsert_metadata_batch(&[meta]).unwrap();
+            }
+        }
+        let selection = Selection {
+            min_duration: Some(600),
+            ..Selection::default()
+        };
+        let ids: Vec<String> = db
+            .select_videos(&selection, SelectionOrder::Queue, None)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(ids, ["exact000001"]);
+
+        let removed = db
+            .take_matching(&selection, SelectionOrder::Random, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed.video.id, "exact000001");
+        assert_eq!(db.queue_len().unwrap(), 4);
     }
 
     #[test]

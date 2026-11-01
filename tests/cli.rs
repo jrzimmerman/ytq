@@ -609,6 +609,34 @@ fn list_and_peek_filter_by_channel_substring() {
 }
 
 #[test]
+fn min_duration_is_an_inclusive_floor_and_combines_into_a_range() {
+    let env = TestEnv::new("min-duration");
+    searchable_queue(&env);
+
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--min-duration", "30m"])),
+        ["bbbbbbbbbb2", "dddddddddd4"]
+    );
+    let range = ["--min-duration", "10m", "--max-duration", "30m"];
+    assert_eq!(
+        table_ids(&env.ok(&[&["list"], &range[..]].concat())),
+        ["aaaaaaaaaa1", "dddddddddd4"]
+    );
+    assert_eq!(
+        table_ids(&env.ok(&[&["peek", "1"], &range[..]].concat())),
+        ["aaaaaaaaaa1"]
+    );
+    let search = env.ok(&[&["search"], &range[..]].concat());
+    assert_eq!(table_ids(&search), ["aaaaaaaaaa1", "dddddddddd4"]);
+
+    // A single exact duration is a valid range.
+    assert_eq!(
+        table_ids(&env.ok(&["list", "--min-duration", "5m", "--max-duration", "5m"])),
+        ["cccccccccc3"]
+    );
+}
+
+#[test]
 fn a_corrupt_categories_cache_only_affects_category_names() {
     let env = TestEnv::new("corrupt-categories");
     searchable_queue(&env);
@@ -626,6 +654,34 @@ fn a_corrupt_categories_cache_only_affects_category_names() {
         assert!(error.contains("failed to parse"), "{command}: {error}");
     }
     assert_eq!(table_ids(&env.ok(&["list"])).len(), 5);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filtered_peek_previews_what_play_opens() {
+    let env = TestEnv::new("peek-previews-play");
+    searchable_queue(&env);
+    env.ok(&["config", "mode", "stack"]);
+    let filters = [
+        "--category",
+        "tech",
+        "--min-duration",
+        "5m",
+        "--max-duration",
+        "30m",
+    ];
+    let preview = env.ok(&[&["peek"], &filters[..]].concat());
+    let expected = table_ids(&preview)[0].to_string();
+    assert_eq!(expected, "dddddddddd4");
+
+    let output = browser_command(&env, true)
+        .arg("play")
+        .args(filters)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&expected));
+    assert!(!env.ok(&["list"]).contains(&expected));
 }
 
 #[test]

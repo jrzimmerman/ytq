@@ -17,6 +17,10 @@ pub struct SelectionArgs {
     /// Maximum video duration, inclusive (e.g. 10m, 30m, 1h, 90s)
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub max_duration: Option<i64>,
+
+    /// Minimum video duration, inclusive (e.g. 2m, 10m, 1h, 90s)
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub min_duration: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -25,11 +29,15 @@ pub struct Selection {
     pub category_id: Option<String>,
     pub channel: Option<String>,
     pub max_duration: Option<i64>,
+    pub min_duration: Option<i64>,
 }
 
 impl SelectionArgs {
     pub fn has_constraints(&self) -> bool {
-        self.category.is_some() || self.channel.is_some() || self.max_duration.is_some()
+        self.category.is_some()
+            || self.channel.is_some()
+            || self.max_duration.is_some()
+            || self.min_duration.is_some()
     }
 
     pub fn resolve(
@@ -37,6 +45,11 @@ impl SelectionArgs {
         query: Option<&str>,
         load_categories: impl FnOnce() -> Result<HashMap<String, String>>,
     ) -> Result<Selection> {
+        if let (Some(min), Some(max)) = (self.min_duration, self.max_duration)
+            && min > max
+        {
+            bail!("minimum duration must not exceed maximum duration");
+        }
         Ok(Selection {
             query: query.map(|q| nonempty(q, "search query")).transpose()?,
             category_id: self
@@ -50,6 +63,7 @@ impl SelectionArgs {
                 .map(|value| nonempty(value, "channel"))
                 .transpose()?,
             max_duration: self.max_duration,
+            min_duration: self.min_duration,
         })
     }
 }
@@ -162,6 +176,25 @@ mod tests {
         );
         assert!(resolve_category("unknown", load).is_err());
         assert!(resolve_category(" ", load).is_err());
+    }
+
+    #[test]
+    fn duration_range_rejects_only_an_inverted_pair() {
+        let range = |min, max| SelectionArgs {
+            min_duration: Some(min),
+            max_duration: Some(max),
+            ..SelectionArgs::default()
+        };
+        let no_categories = || Ok(HashMap::new());
+        assert!(range(600, 600).resolve(None, no_categories).is_ok());
+        assert!(range(60, 600).resolve(None, no_categories).is_ok());
+        assert_eq!(
+            range(601, 600)
+                .resolve(None, no_categories)
+                .unwrap_err()
+                .to_string(),
+            "minimum duration must not exceed maximum duration"
+        );
     }
 
     #[test]
