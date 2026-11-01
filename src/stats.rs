@@ -36,6 +36,53 @@ pub struct DateRange {
     pub end: Option<DateTime<Utc>>,
 }
 
+/// Parses a four-digit year. Shorter years are almost always typos, and silently
+/// reporting on the year 26 helps nobody.
+fn parse_year_digits(value: &str) -> Option<i32> {
+    (value.len() == 4 && value.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
+}
+
+/// Parses a month or day number, padded or not.
+fn parse_date_part(value: &str) -> Option<u32> {
+    (matches!(value.len(), 1 | 2) && value.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
+}
+
+/// `--year` value: YYYY.
+pub fn parse_year(value: &str) -> Result<i32, String> {
+    parse_year_digits(value).ok_or_else(|| "expected a four-digit year (YYYY)".to_string())
+}
+
+/// `--month` value: YYYY-MM, where the month may be unpadded.
+pub fn parse_month(value: &str) -> Result<(i32, u32), String> {
+    value
+        .split_once('-')
+        .and_then(|(year, month)| {
+            let year = parse_year_digits(year)?;
+            let month = parse_date_part(month)?;
+            NaiveDate::from_ymd_opt(year, month, 1).map(|_| (year, month))
+        })
+        .ok_or_else(|| "expected YYYY-MM with a four-digit year and a month from 1 to 12".into())
+}
+
+/// `--from` and `--to` value: YYYY-MM-DD, where month and day may be unpadded.
+pub fn parse_date(value: &str) -> Result<NaiveDate, String> {
+    value
+        .split_once('-')
+        .and_then(|(year, rest)| {
+            let (month, day) = rest.split_once('-')?;
+            NaiveDate::from_ymd_opt(
+                parse_year_digits(year)?,
+                parse_date_part(month)?,
+                parse_date_part(day)?,
+            )
+        })
+        .ok_or_else(|| "expected a real date as YYYY-MM-DD with a four-digit year".into())
+}
+
 impl DateRange {
     fn local_day_start(date: NaiveDate) -> Option<DateTime<Utc>> {
         #[cfg(test)]
@@ -1715,6 +1762,36 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_dates_need_four_digit_years_but_allow_unpadded_parts() {
+        assert_eq!(parse_year("2026"), Ok(2026));
+        assert_eq!(parse_month("2026-01"), Ok((2026, 1)));
+        assert_eq!(parse_month("2026-1"), Ok((2026, 1)));
+        assert_eq!(
+            parse_date("2026-1-5"),
+            NaiveDate::from_ymd_opt(2026, 1, 5).ok_or(String::new())
+        );
+        for year in ["", "26", "0", "20266", "-200", "+202", "abcd"] {
+            assert!(parse_year(year).is_err(), "{year}");
+        }
+        for month in [
+            "", "26-01", "2026", "2026-", "2026-0", "2026-13", "2026-001", "2026-1-1",
+        ] {
+            assert!(parse_month(month).is_err(), "{month}");
+        }
+        for date in [
+            "",
+            "26-01-01",
+            "2026-01",
+            "2026-02-30",
+            "2026-1-1-1",
+            "2026-001-01",
+            "nope",
+        ] {
+            assert!(parse_date(date).is_err(), "{date}");
+        }
+    }
 
     use chrono::TimeZone;
 

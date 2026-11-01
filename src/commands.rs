@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::db::{Db, RemovedVideo, SelectionOrder};
 use crate::models::{Action, Event, Mode, Video, VideoMeta};
-use crate::selection::SelectionArgs;
+use crate::selection::{CountArgs, Selection, SelectionArgs};
 use crate::stats::DateRange;
 use crate::{outln, paths, stats, store, youtube, youtube_api};
 
@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use colored::Colorize;
 use unicode_width::UnicodeWidthStr;
+
+const SEARCH_DEFAULT_CAP: usize = 20;
+const PEEK_DEFAULT_CAP: usize = 1;
 
 pub fn add(input: &str) -> Result<()> {
     // Normalize input before opening the queue, so bad input fails without
@@ -166,26 +169,37 @@ fn print_no_matches(db: &Db) -> Result<()> {
     Ok(())
 }
 
-pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usize>) -> Result<()> {
+/// Selects up to `cap` videos and reports whether more matched.
+fn select_capped(
+    db: &Db,
+    selection: &Selection,
+    order: SelectionOrder,
+    cap: Option<usize>,
+) -> Result<(Vec<Video>, bool)> {
+    // Fetch one extra row to distinguish a complete result from a truncated one.
+    let mut videos = db.select_videos(selection, order, cap.map(|n| n.saturating_add(1)))?;
+    let truncated = cap.is_some_and(|cap| videos.len() > cap);
+    if let Some(cap) = cap {
+        videos.truncate(cap);
+    }
+    Ok((videos, truncated))
+}
+
+/// Stderr, so `ytq list --limit 5 > file` holds only the rows asked for.
+fn note_more_matches() {
+    eprintln!("More matches available; use --limit N or --all.");
+}
+
+pub fn search(query: Option<&str>, selection: &SelectionArgs, count: &CountArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
     let selection = selection.resolve(query, || store::load_categories(&paths.categories_file))?;
-    // Fetch one extra row to distinguish a complete result from a truncated one.
-    let fetch_limit = limit
-        .map(|n| {
-            n.checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("result count is too large"))
-        })
-        .transpose()?;
-    let mut videos = db.select_videos(&selection, selection_order(cfg.mode), fetch_limit)?;
+    let cap = count.cap(Some(SEARCH_DEFAULT_CAP));
+    let (videos, truncated) = select_capped(&db, &selection, selection_order(cfg.mode), cap)?;
     if videos.is_empty() {
         print_no_matches(&db)?;
         return Ok(());
-    }
-    let truncated = limit.is_some_and(|limit| videos.len() > limit);
-    if let Some(limit) = limit {
-        videos.truncate(limit);
     }
     outln!(
         "{} matching video(s) shown ({:?} mode):",
@@ -195,12 +209,12 @@ pub fn search(query: Option<&str>, selection: &SelectionArgs, limit: Option<usiz
     let metadata = db.load_metadata_for(&videos)?;
     print_list_enriched(&videos, &metadata, !cfg.offline);
     if truncated {
-        outln!("More matches available; use --limit N or --all.");
+        note_more_matches();
     }
     Ok(())
 }
 
-pub fn list(selection: &SelectionArgs) -> Result<()> {
+pub fn list(selection: &SelectionArgs, count: &CountArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
@@ -208,23 +222,27 @@ pub fn list(selection: &SelectionArgs) -> Result<()> {
     let has_constraints = selection.has_constraints();
     let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
     // Always oldest first: `list` is the inventory, `peek` is what plays next.
-    let queue = db.select_videos(&selection, SelectionOrder::Queue, None)?;
+    let mut queue = db.select_videos(&selection, SelectionOrder::Queue, None)?;
     if queue.is_empty() {
         print_no_matches(&db)?;
         return Ok(());
     }
-    let metadata = db.load_metadata_for(&queue)?;
 
+    // The header counts the whole set, even when `--limit` shows only part of it.
+    let matched = queue.len();
     if has_constraints {
-        outln!(
-            "{} of {} videos in queue match:",
-            queue.len(),
-            db.queue_len()?
-        );
+        outln!("{matched} of {} videos in queue match:", db.queue_len()?);
     } else {
-        outln!("{} videos in queue:", queue.len());
+        outln!("{matched} videos in queue:");
     }
+    if let Some(cap) = count.cap(None) {
+        queue.truncate(cap);
+    }
+    let metadata = db.load_metadata_for(&queue)?;
     print_list_enriched(&queue, &metadata, !cfg.offline);
+    if queue.len() < matched {
+        note_more_matches();
+    }
     Ok(())
 }
 
@@ -341,14 +359,15 @@ fn table_cell(s: &str, width: usize) -> String {
     text
 }
 
-pub fn peek(n: usize, selection: &SelectionArgs) -> Result<()> {
+pub fn peek(n: Option<usize>, selection: &SelectionArgs, count: &CountArgs) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let cfg = store::load_config(&paths.config_file)?;
     let db = Db::open(&paths.db_file)?;
 
     let has_constraints = selection.has_constraints();
     let selection = selection.resolve(None, || store::load_categories(&paths.categories_file))?;
-    let slice = db.select_videos(&selection, selection_order(cfg.mode), Some(n))?;
+    let cap = count.cap(Some(n.unwrap_or(PEEK_DEFAULT_CAP)));
+    let (slice, truncated) = select_capped(&db, &selection, selection_order(cfg.mode), cap)?;
     if slice.is_empty() {
         print_no_matches(&db)?;
         return Ok(());
@@ -362,23 +381,27 @@ pub fn peek(n: usize, selection: &SelectionArgs) -> Result<()> {
         outln!("Next {actual} video(s) ({:?} mode):", cfg.mode);
     }
     print_list_enriched(&slice, &metadata, !cfg.offline);
+    // Bare `peek` and `peek N` ask for just the next few, so the rest is no surprise.
+    if truncated && count.limit.is_some() {
+        note_more_matches();
+    }
     Ok(())
 }
 
 pub fn stats(
     wrapped: bool,
-    all: bool,
+    all_time: bool,
     week: bool,
-    month: Option<String>,
-    year: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
+    month: Option<Option<(i32, u32)>>,
+    year: Option<Option<i32>>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 ) -> Result<()> {
     let paths = paths::AppPaths::init()?;
     let db = Db::open(&paths.db_file)?;
 
     // Resolve date range from flags
-    let range = resolve_date_range(all, week, month, year, from, to)?;
+    let range = resolve_date_range(all_time, week, month, year, from, to)?;
 
     // Load the complete history. Stats need events before the requested range
     // to distinguish first-time additions/opens from later repeats.
@@ -417,73 +440,49 @@ pub fn stats(
 /// Resolves CLI flags into a DateRange. Flags are already mutually exclusive
 /// via clap's `conflicts_with_all`, so at most one period flag is set.
 ///
-/// When no date flags are given, defaults to the current year unless `--all`
-/// is passed.
+/// When no date flags are given, defaults to the current year unless
+/// `--all-time` is passed.
 fn resolve_date_range(
-    all: bool,
+    all_time: bool,
     week: bool,
-    month: Option<String>,
-    year: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
+    month: Option<Option<(i32, u32)>>,
+    year: Option<Option<i32>>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 ) -> Result<DateRange> {
     if week {
         return Ok(DateRange::last_days(7));
     }
 
-    if let Some(val) = month {
-        if val.is_empty() {
-            // --month with no value => last 30 days
-            return Ok(DateRange::last_days(30));
+    match month {
+        // --month with no value => last 30 days
+        Some(None) => return Ok(DateRange::last_days(30)),
+        Some(Some((y, m))) => {
+            return DateRange::specific_month(y, m)
+                .ok_or_else(|| anyhow::anyhow!("failed to build date range for {y}-{m:02}"));
         }
-        // --month YYYY-MM
-        let parts: Vec<&str> = val.split('-').collect();
-        if parts.len() != 2 {
-            bail!("invalid month format '{val}': expected YYYY-MM");
-        }
-        let y: i32 = parts[0]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid year in '{val}'"))?;
-        let m: u32 = parts[1]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid month in '{val}'"))?;
-        return DateRange::specific_month(y, m)
-            .ok_or_else(|| anyhow::anyhow!("invalid month: {val}"));
+        None => {}
     }
 
-    if let Some(val) = year {
-        if val.is_empty() {
-            // --year with no value => last 365 days
-            return Ok(DateRange::last_days(365));
+    match year {
+        // --year with no value => last 365 days
+        Some(None) => return Ok(DateRange::last_days(365)),
+        Some(Some(y)) => {
+            return DateRange::specific_year(y)
+                .ok_or_else(|| anyhow::anyhow!("failed to build date range for {y}"));
         }
-        // --year YYYY
-        let y: i32 = val
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid year: '{val}'"))?;
-        return DateRange::specific_year(y).ok_or_else(|| anyhow::anyhow!("invalid year: {val}"));
+        None => {}
     }
 
     if from.is_some() || to.is_some() {
-        let from_date = from
-            .map(|s| {
-                NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                    .map_err(|_| anyhow::anyhow!("invalid --from date '{s}': expected YYYY-MM-DD"))
-            })
-            .transpose()?;
-        let to_date = to
-            .map(|s| {
-                NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                    .map_err(|_| anyhow::anyhow!("invalid --to date '{s}': expected YYYY-MM-DD"))
-            })
-            .transpose()?;
-        if matches!((from_date, to_date), (Some(from), Some(to)) if from > to) {
+        if matches!((from, to), (Some(from), Some(to)) if from > to) {
             bail!("--from date must not be later than --to date");
         }
-        return DateRange::custom(from_date, to_date)
+        return DateRange::custom(from, to)
             .ok_or_else(|| anyhow::anyhow!("failed to build custom date range"));
     }
 
-    if all {
+    if all_time {
         return Ok(DateRange::all_time());
     }
 
@@ -549,7 +548,6 @@ pub fn fetch(
     target: Option<&str>,
     queue_flag: bool,
     history_flag: bool,
-    all_flag: bool,
     limit: Option<usize>,
     force: bool,
     refresh_categories: bool,
@@ -599,7 +597,7 @@ pub fn fetch(
             .collect::<Result<Vec<_>>>()?;
         (ids, true)
     } else {
-        let ids = collect_ids_for_scope(&db, &paths, queue_flag, history_flag, all_flag)?;
+        let ids = collect_ids_for_scope(&db, &paths, queue_flag, history_flag)?;
         (ids, false)
     };
 
@@ -626,8 +624,15 @@ pub fn fetch(
     }
 
     // Apply limit
-    if let Some(max) = limit {
+    if let Some(max) = limit
+        && ids_to_fetch.len() > max
+    {
+        let skipped = ids_to_fetch.len() - max;
         ids_to_fetch.truncate(max);
+        eprintln!(
+            "{} {skipped} more video(s) not fetched because of --limit.",
+            "Note:".yellow()
+        );
     }
 
     if ids_to_fetch.is_empty() {
@@ -743,19 +748,17 @@ fn collect_ids_for_scope(
     paths: &paths::AppPaths,
     queue_flag: bool,
     history_flag: bool,
-    all_flag: bool,
 ) -> Result<Vec<String>> {
     let mut ids = Vec::new();
 
     // Default to queue-only when no flags are given
-    let use_queue = all_flag || queue_flag || (!history_flag);
-    let use_history = all_flag || history_flag;
+    let use_queue = queue_flag || !history_flag;
 
     if use_queue {
         ids.extend(db.queue_ids()?);
     }
 
-    if use_history {
+    if history_flag {
         let events = store::stream_history(&paths.history_dir)?;
         for event in &events {
             ids.push(event.video_id.clone());
