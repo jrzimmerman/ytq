@@ -656,6 +656,139 @@ fn a_corrupt_categories_cache_only_affects_category_names() {
     assert_eq!(table_ids(&env.ok(&["list"])).len(), 5);
 }
 
+const SELECTORS: [&str; 5] = ["list", "peek", "search", "next", "random"];
+
+// A shared flag must parse, match, and fail the same way on every command that
+// accepts it. None of these cases reach a browser, so this runs on every OS.
+#[test]
+fn shared_filters_fail_identically_on_every_selector() {
+    let populated = TestEnv::new("matrix-errors");
+    searchable_queue(&populated);
+    let empty = TestEnv::new("matrix-errors-empty");
+    fs::write(
+        empty.data_dir().join("categories.json"),
+        r#"{"28":"Science & Technology","10":"Music","20":"Music Discussion"}"#,
+    )
+    .unwrap();
+    fs::write(
+        populated.data_dir().join("categories.json"),
+        r#"{"28":"Science & Technology","10":"Music","20":"Music Discussion"}"#,
+    )
+    .unwrap();
+    let before = populated.ok(&["list"]);
+
+    for (filters, code, message) in [
+        (
+            vec!["--max-duration", "30"],
+            2,
+            "error: invalid value '30' for '--max-duration <DURATION>': expected a positive duration with unit s, m, or h (e.g. 30m)",
+        ),
+        (
+            vec!["--min-duration", "0m"],
+            2,
+            "error: invalid value '0m' for '--min-duration <DURATION>': duration must be positive and fit in a 64-bit seconds count",
+        ),
+        (
+            vec!["--category", "nosuch"],
+            1,
+            "error: unknown category 'nosuch'; use a YouTube category ID or run `ytq fetch` to cache category names",
+        ),
+        (
+            vec!["--category", "mus"],
+            1,
+            "error: ambiguous category 'mus': Music (10), Music Discussion (20)",
+        ),
+        (
+            vec!["--channel", " "],
+            1,
+            "error: channel must not be empty",
+        ),
+        (
+            vec!["--min-duration", "31m", "--max-duration", "30m"],
+            1,
+            "error: minimum duration must not exceed maximum duration",
+        ),
+    ] {
+        for env in [&populated, &empty] {
+            for command in SELECTORS {
+                let args = [&[command], &filters[..]].concat();
+                let output = env.run(&args);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert_eq!(output.status.code(), Some(code), "{args:?}: {stderr}");
+                assert_eq!(stderr.lines().next(), Some(message), "{args:?}");
+                assert!(output.stdout.is_empty(), "{args:?}");
+            }
+        }
+    }
+    assert_eq!(populated.ok(&["list"]), before);
+}
+
+#[test]
+fn shared_filters_report_no_match_identically_on_every_selector() {
+    let populated = TestEnv::new("matrix-no-match");
+    searchable_queue(&populated);
+    let empty = TestEnv::new("matrix-no-match-empty");
+    let before = populated.ok(&["list"]);
+
+    for filters in [
+        ["--category", "99"],
+        ["--channel", "nobody"],
+        ["--max-duration", "1s"],
+        ["--min-duration", "99h"],
+    ] {
+        for command in SELECTORS {
+            let args = [&[command], &filters[..]].concat();
+            assert_eq!(
+                populated.ok(&args),
+                "No matching videos in queue (filters use cached metadata only).\n",
+                "{args:?}"
+            );
+            assert_eq!(empty.ok(&args), "Queue is empty.\n", "{args:?}");
+        }
+    }
+    assert_eq!(populated.ok(&["list"]), before);
+}
+
+#[test]
+fn shared_filters_select_the_same_videos_on_every_read_only_command() {
+    let env = TestEnv::new("matrix-selection");
+    searchable_queue(&env);
+
+    for (filters, expected) in [
+        (
+            vec!["--category", "tech"],
+            vec!["aaaaaaaaaa1", "bbbbbbbbbb2", "dddddddddd4"],
+        ),
+        (vec!["--channel", "music"], vec!["cccccccccc3"]),
+        (
+            vec!["--max-duration", "30m"],
+            vec!["aaaaaaaaaa1", "cccccccccc3", "dddddddddd4"],
+        ),
+        (
+            vec!["--min-duration", "30m"],
+            vec!["bbbbbbbbbb2", "dddddddddd4"],
+        ),
+        (
+            vec![
+                "--category",
+                "28",
+                "--channel",
+                "talks",
+                "--min-duration",
+                "10m",
+                "--max-duration",
+                "30m",
+            ],
+            vec!["dddddddddd4"],
+        ),
+    ] {
+        for base in [vec!["list"], vec!["peek", "99"], vec!["search", "--all"]] {
+            let args = [&base[..], &filters[..]].concat();
+            assert_eq!(table_ids(&env.ok(&args)), expected, "{args:?}");
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn filtered_peek_previews_what_play_opens() {
